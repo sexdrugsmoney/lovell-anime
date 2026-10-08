@@ -1,0 +1,20 @@
+{
+  "name": "lovell",
+  "version": "2.0.0",
+  "description": "LOVELL — anime keşif sitesi ve kişisel video oynatıcı",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "doctor": "node scripts/doctor.mjs",
+    "test": "node --test",
+    "yayinla": "node scripts/deploy.mjs",
+    "deploy": "node scripts/deploy.mjs",
+    "yayınla": "node scripts/deploy.mjs"
+  },
+  "license": "MIT"
+}

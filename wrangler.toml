@@ -1,0 +1,17 @@
+# Cloudflare Workers yapılandırması. Yayınlamak için: npm run yayinla
+name = "lovell"
+main = "worker/index.js"
+compatibility_date = "2025-09-01"
+
+# dist/ klasörü yayın sırasında otomatik oluşturulur (scripts/deploy.mjs).
+[assets]
+directory = "./dist"
+binding = "ASSETS"
+
+# Bölüm başına sahipli medya kaynakları. Örn. anahtar: tv:127532:1:1
+[[kv_namespaces]]
+binding = "MEDIA_SOURCES"
+id = "399909eecbd84a46b352f89ba67c758e"
+
+[vars]
+WATCH_REGION = "TR"

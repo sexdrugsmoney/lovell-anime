@@ -1,0 +1,28 @@
+name: CinePro Health Check
+
+# Her 15 dakikada bir CinePro URL'ini "ısıt" — Render free tier uyku moduna geçmesin
+on:
+  schedule:
+    - cron: '*/14 * * * *'   # Her 14 dakikada bir
+  workflow_dispatch:
+
+jobs:
+  ping:
+    name: Keep CinePro Awake
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Ping CinePro /health
+        run: |
+          URL="${{ secrets.CINEPRO_URL }}"
+          if [ -z "$URL" ]; then
+            echo "CINEPRO_URL secret tanımlı değil, atlanıyor"
+            exit 0
+          fi
+          # /health endpoint dene, yoksa root
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 20 "${URL}/health" || true)
+          if [ "$HTTP" = "000" ] || [ "$HTTP" = "" ]; then
+            curl -s --max-time 20 "${URL}/" || true
+          fi
+          echo "Ping tamamlandi: $HTTP"

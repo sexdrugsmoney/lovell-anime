@@ -1,0 +1,4 @@
+Her anime icin bir klasor ac: tv-127532, movie-372058 ya da al-21.
+Klasor adi animenin sayfasinda yazar.
+Bolum dosyalari: S01E01.mp4, S01E02.mp4 ...  Altyazi: S01E01.tr.srt
+Ayrinti: README.md

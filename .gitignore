@@ -10,3 +10,5 @@ media/*
 dist
 .wrangler
 .cinepro-core
+.backup
+preview.jpg

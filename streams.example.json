@@ -1,0 +1,9 @@
+{
+  "tv:127532:1:1": [
+    {
+      "name": "Kendi sunucum",
+      "url": "https://ornek.com/videolar/solo-leveling/01.m3u8",
+      "subtitles": [{"label": "Türkçe", "language": "tr", "url": "https://ornek.com/videolar/solo-leveling/01.tr.vtt"}]
+    }
+  ]
+}
