@@ -12,3 +12,4 @@ dist
 .cinepro-core
 .backup
 preview.jpg
+package-lock.json
