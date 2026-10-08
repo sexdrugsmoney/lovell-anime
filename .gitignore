@@ -1,0 +1,12 @@
+node_modules
+*.log
+.env
+streams.json
+media/*
+!media/BURAYA-VIDEO-KOY.txt
+.DS_Store
+.vscode/*
+.idea
+dist
+.wrangler
+.cinepro-core
