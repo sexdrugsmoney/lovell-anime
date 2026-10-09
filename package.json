@@ -16,5 +16,11 @@
     "deploy": "node scripts/deploy.mjs",
     "yayınla": "node scripts/deploy.mjs"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "devDependencies": {
+    "tweetsodium": "^0.0.4"
+  },
+  "dependencies": {
+    "libsodium-wrappers": "^0.8.4"
+  }
 }
