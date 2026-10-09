@@ -2,7 +2,7 @@
 // Statik dosyalar (dist/) Workers Static Assets ile, /api/* uçları bu betikle sunulur.
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
 import {configure, browse, search, home, detail, episodes, GENRES, dataErrors} from '../lib/catalog-core.js';
-import offlineEpisodes from '../src/data/offline-episodes.json' with {type: 'json'};
+import offlineEpisodes from '../src/data/offline-episodes.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
 
