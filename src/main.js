@@ -45,17 +45,37 @@ function saveProgress(a, s, e, t, d) {
 
 // ---------------- Yardımcılar ----------------
 let toastTimer;
-function toast(msg) {
+function toast(msg, type = 'info') {
   const t = $('#toast');
   t.textContent = msg;
+  t.dataset.type = type;
   t.classList.add('show');
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
 }
+const apiCache = new Map(); // path -> {data, expires}
+const CACHE_TTL = {
+  '/api/home': 300,
+  '/api/genres': 86400,
+  '/api/browse': 300,
+  '/api/search': 120,
+};
 async function api(path, timeout = 20000) {
+  const ttl = Object.entries(CACHE_TTL).find(([k]) => path.startsWith(k))?.[1];
+  if (ttl) {
+    const hit = apiCache.get(path);
+    if (hit && hit.expires > Date.now()) return hit.data;
+  }
   const r = await fetch(path, {signal: AbortSignal.timeout(timeout)});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(Error(data.error || `HTTP ${r.status}`), {data});
+  if (ttl) {
+    if (apiCache.size >= 200) {
+      // LRU basit: en eski girişi sil
+      apiCache.delete(apiCache.keys().next().value);
+    }
+    apiCache.set(path, {data, expires: Date.now() + ttl * 1000});
+  }
   return data;
 }
 const score = n => n ? n.toLocaleString('tr-TR', {minimumFractionDigits: 1, maximumFractionDigits: 1}) : '';
@@ -89,7 +109,7 @@ function wideCard(r) {
   const a = r.item, p = progress[`${keyOf(a)}:${r.s}:${r.e}`];
   const pct = p ? Math.min(100, p.t / p.d * 100) : 0;
   return `<a class="wide" href="${watchHref(a, r.s, r.e)}">
-    <span class="wide-img">${a.backdrop || a.poster ? `<img src="${esc(a.backdrop || a.poster)}" alt="" loading="lazy" data-fb>` : ''}<span class="wide-play">${PLAY}</span></span>
+    <span class="wide-img">${a.backdrop || a.poster ? `<img src="${esc(a.backdrop || a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="wide-play">${PLAY}</span></span>
     <span class="bar"><i style="width:${pct}%"></i></span>
     <span class="card-title">${esc(a.title)}</span>
     <span class="card-meta">${isMovie(a) ? 'Film' : `${r.s}. sezon, ${r.e}. bölüm`}${p ? ` <span>${fmtTime(p.d - p.t)} kaldı</span>` : ''}</span>
@@ -120,6 +140,20 @@ function errorBox(e, retry = true) {
   return `<div class="state"><h2>Veriler yüklenemedi</h2><p>${esc(e.message)}. İnternet bağlantını kontrol edip tekrar dene. Sorun sürerse terminalde <code>npm run doctor</code> komutunu çalıştır.</p>${retry ? '<button class="btn" onclick="location.reload()">Tekrar dene</button>' : ''}</div>`;
 }
 
+// ---------------- Skeleton helpers ----------------
+function skeletonGrid(count = 12) {
+  return `<div class="grid">${Array.from({length: count}, () => `<div class="card card-skeleton"><span class="card-img skeleton" style="aspect-ratio:2/3"></span><span class="skeleton" style="height:14px;margin-top:8px;border-radius:4px"></span><span class="skeleton" style="height:12px;margin-top:6px;width:60%;border-radius:4px"></span></div>`).join('')}</div>`;
+}
+
+// ---------------- IntersectionObserver kart animasyonu ----------------
+function observeCards(root = document) {
+  if (reduceMotion) return;
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } });
+  }, {threshold: 0.08});
+  $$('.card, .wide', root).forEach(c => io.observe(c));
+}
+
 // ---------------- Ana sayfa ----------------
 let heroTimer;
 function heroView(items) {
@@ -138,7 +172,7 @@ function bindHero(items) {
   const show = n => {
     i = (n + items.length) % items.length;
     const a = items[i];
-    $('.hero-bg', hero).innerHTML = a.backdrop ? `<img src="${esc(a.backdrop)}" alt="" data-fb>` : '';
+    $('.hero-bg', hero).innerHTML = a.backdrop ? `<img src="${esc(a.backdrop)}" alt="" loading="eager" fetchpriority="high" data-fb>` : '';
     $('.hero-body', hero).innerHTML = `
       <h1 class="hero-title">${esc(a.title)}</h1>
       <p class="hero-meta">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}<span>${esc(a.year)}</span>${a.genres?.length ? `<span>${esc(a.genres.slice(0, 3).join(', '))}</span>` : ''}</p>
@@ -172,6 +206,7 @@ async function viewHome(v) {
   bindHero(data.hero);
   bindShelves();
   imgFallback();
+  observeCards();
   setStatus(data.source);
 }
 let genres = [];
@@ -199,19 +234,46 @@ async function viewBrowse(v, kind, params) {
   $('#sort').onchange = e => location.hash = link({sirala: e.target.value});
   $('.filter-search').onsubmit = e => { e.preventDefault(); location.hash = link({ara: e.target.ara.value.trim()}); };
   let page = 1;
+  let loadingMore = false;
   const load = async () => {
-    $('#more-wrap').innerHTML = loading();
+    if (loadingMore) return;
+    loadingMore = true;
+    if (page === 1) {
+      $('#grid').innerHTML = skeletonGrid();
+      $('#more-wrap').innerHTML = '';
+    } else {
+      $('#more-wrap').innerHTML = loading();
+    }
     try {
       const d = await api(`/api/browse?${new URLSearchParams({kind, genre, sort, page, q})}`);
       if (v !== routeId) return;
+      if (page === 1) $('#grid').innerHTML = '';
       $('#grid').insertAdjacentHTML('beforeend', d.items.map(card).join(''));
       imgFallback($('#grid'));
+      observeCards($('#grid'));
       setStatus(d.source);
       const none = page === 1 && !d.items.length;
-      $('#more-wrap').innerHTML = none ? `<div class="state"><h2>Sonuç yok</h2><p>Başka bir tür ya da arama dene.</p><a class="btn" href="${base}">Filtreleri temizle</a></div>`
-        : d.page < d.pages ? '<button class="btn btn-ghost" id="more">Daha fazla göster</button>' : '';
-      if ($('#more')) $('#more').onclick = () => { page++; load(); };
-    } catch (e) { if (v === routeId) $('#more-wrap').innerHTML = errorBox(e, false) + '<button class="btn" id="more">Tekrar dene</button>'; if ($('#more')) $('#more').onclick = load; }
+      if (none) {
+        $('#more-wrap').innerHTML = `<div class="state"><h2>Sonuç yok</h2><p>Başka bir tür ya da arama dene.</p><a class="btn" href="${base}">Filtreleri temizle</a></div>`;
+        loadingMore = false;
+        return;
+      }
+      if (d.page < d.pages) {
+        // Sonsuz scroll sentinel
+        $('#more-wrap').innerHTML = '<div id="scroll-sentinel" style="height:1px"></div>';
+        const sentinel = $('#scroll-sentinel');
+        const scrollIo = new IntersectionObserver(entries => {
+          if (entries[0].isIntersecting && !loadingMore) { page++; load(); }
+        }, {rootMargin: '200px'});
+        scrollIo.observe(sentinel);
+      } else {
+        $('#more-wrap').innerHTML = '';
+      }
+    } catch (e) {
+      if (v === routeId) $('#more-wrap').innerHTML = errorBox(e, false) + '<button class="btn" id="more-retry">Tekrar dene</button>';
+      if ($('#more-retry')) $('#more-retry').onclick = () => { loadingMore = false; load(); };
+    }
+    loadingMore = false;
   };
   load();
 }
@@ -236,6 +298,7 @@ async function viewLibrary(v) {
   if (v !== routeId) return;
   $('#lib').innerHTML = `<div class="grid">${details.map(card).join('')}</div>`;
   imgFallback();
+  observeCards();
 }
 function guide(folder) {
   const f = folder || 'tv-127532';
@@ -322,7 +385,7 @@ function whereToWatch(a) {
   const tmdbWatch = ['tv', 'movie'].includes(a.kind) ? `https://www.themoviedb.org/${a.kind}/${encodeURIComponent(a.id)}/watch?locale=TR` : null;
   const providerLink = p?.link || tmdbWatch;
   const body = groups.length || links.length
-    ? `${groups.map(([t, l]) => `<div class="prov-group"><h3>${t}</h3><ul class="prov">${l.map(x => `<li><a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${x.logo ? `<img src="${esc(x.logo)}" alt="" width="36" height="36" loading="lazy" data-fb>` : ''}<span>${esc(x.name)}</span></a></li>`).join('')}</ul></div>`).join('')}
+    ? `${groups.map(([t, l]) => `<div class="prov-group"><h3>${t}</h3><ul class="prov">${l.map(x => `<li><a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${x.logo ? `<img src="${esc(x.logo)}" alt="" width="36" height="36" loading="lazy" decoding="async" data-fb>` : ''}<span>${esc(x.name)}</span></a></li>`).join('')}</ul></div>`).join('')}
        ${links.length ? `<div class="prov-group"><h3>Resmî yayın sayfaları</h3><ul class="links">${links.map(l => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.name)}${l.language ? ` <small>${esc(l.language)}</small>` : ''}</a></li>`).join('')}</ul></div>` : ''}
        ${providerLink ? `<a class="text-btn" href="${esc(providerLink)}" target="_blank" rel="noopener noreferrer">Tüm resmî izleme seçenekleri</a>` : ''}`
     : `<p class="muted">${a.source === 'TMDB' ? 'Türkiye için yayın platformu verisi bulunamadı.' : 'Yayın platformu bilgisi şu an alınamıyor (TMDB bağlantısı yok).'}</p>${providerLink ? `<a class="btn btn-ghost btn-sm" href="${esc(providerLink)}" target="_blank" rel="noopener noreferrer">TMDB’de izleme seçeneklerini kontrol et</a>` : ''}`;
@@ -356,7 +419,7 @@ function renderEpisodes(ctx, page = 0) {
     const has = localEps?.has(`${ctx.s}:${ep.n}`);
     return `<li><a class="ep ${cur ? 'cur' : ''} ${pct > 90 ? 'seen' : ''}" href="${watchHref(ctx.a, ctx.s, ep.n)}" ${cur ? 'aria-current="true"' : ''}>
       <span class="ep-n">${ep.n}</span>
-      <span class="ep-thumb thumb">${ep.still ? `<img src="${esc(ep.still)}" alt="" loading="lazy" data-fb>` : ''}${pct ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}</span>
+      <span class="ep-thumb thumb">${ep.still ? `<img src="${esc(ep.still)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}${pct ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}</span>
       <span class="ep-body"><span class="ep-title">${esc(ep.title)}</span>
         <span class="ep-meta">${ep.runtime ? `<span>${ep.runtime} dk</span>` : ''}${ep.date ? `<span>${fmtDate(ep.date)}</span>` : ''}${has ? '<span class="has">Dosyan var</span>' : ''}${pct > 90 ? '<span>İzlendi</span>' : ''}</span>
         ${ep.overview ? `<span class="ep-text">${esc(ep.overview)}</span>` : ''}</span>
@@ -383,6 +446,7 @@ function nextOf(ctx) {
 async function loadSources(ctx) {
   let d;
   const alId = ctx.a.anilistId || '';
+  $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar aranıyor…<br><small style="color:#888;font-size:13px">(İlk açılışta 50 saniyeye kadar sürebilir)</small></div>`;
   try {
     d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`);
   } catch {
@@ -639,8 +703,7 @@ si.addEventListener('input', () => {
   const q = si.value.trim(), seq = ++searchSeq;
   if (q.length < 2) { sr.innerHTML = '<p class="muted pad">En az iki harf yaz.</p>'; return; }
   sr.innerHTML = loading('Aranıyor');
-  searchTimer = setTimeout(async () => {
-    try {
+  searchTimer = setTimeout(async () => {    try {
       const d = await api(`/api/search?q=${encodeURIComponent(q)}`);
       if (seq !== searchSeq) return;
       sr.innerHTML = d.items.length ? d.items.slice(0, 14).map((a, i) => `<a class="result" role="option" href="${watchHref(a)}" data-i="${i}">
@@ -649,7 +712,7 @@ si.addEventListener('input', () => {
         : `<p class="muted pad">“${esc(q)}” için sonuç yok. Japonca ya da İngilizce adını dene.</p>`;
       imgFallback(sr);
     } catch (e) { if (seq === searchSeq) sr.innerHTML = `<p class="muted pad">Arama yapılamadı: ${esc(e.message)}</p>`; }
-  }, 280);
+  }, 300);
 });
 si.addEventListener('keydown', e => {
   const items = $$('.result', sr);
@@ -667,6 +730,23 @@ document.addEventListener('keydown', e => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
   if ((e.key === '/' && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) { e.preventDefault(); openSearch(); }
 });
+
+// ---------------- Hamburger menü ----------------
+const hamburger = $('#hamburger');
+const mainNav = $('#main-nav');
+if (hamburger && mainNav) {
+  hamburger.onclick = () => {
+    const open = mainNav.classList.toggle('open');
+    hamburger.setAttribute('aria-expanded', String(open));
+  };
+  // Nav link'e tıklandığında menü kapanır
+  mainNav.addEventListener('click', e => {
+    if (e.target.closest('a')) {
+      mainNav.classList.remove('open');
+      hamburger.setAttribute('aria-expanded', 'false');
+    }
+  });
+}
 
 // ---------------- Tema ----------------
 function themeLabel() {

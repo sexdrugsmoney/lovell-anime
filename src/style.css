@@ -380,5 +380,105 @@ dialog::backdrop { background: rgba(5, 6, 16, .62); backdrop-filter: blur(3px); 
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
+/* ---------- Skeleton loader ---------- */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background: linear-gradient(90deg, var(--bg-3) 25%, color-mix(in srgb, var(--bg-3) 60%, var(--text) 8%) 50%, var(--bg-3) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease infinite;
+  border-radius: 6px;
+  display: block;
+}
+.card-skeleton { pointer-events: none; }
+.card-skeleton .card-img { background: none; }
+
+/* ---------- Kart hover overlay ---------- */
+.card-img::after {
+  content: "";
+  position: absolute; inset: 0; z-index: 2;
+  background: linear-gradient(to top, rgba(0,0,0,.72) 0%, transparent 55%);
+  opacity: 0;
+  transition: opacity .2s;
+  border-radius: 6px;
+}
+.card:hover .card-img::after { opacity: 1; }
+.card { transition: transform .2s; }
+.card:hover { transform: translateY(-4px); }
+
+/* ---------- Scroll animasyonu ---------- */
+.card, .wide {
+  opacity: 0;
+  transform: translateY(18px);
+  transition: opacity .35s ease, transform .35s ease;
+}
+.card.visible, .wide.visible { opacity: 1; transform: none; }
+@media (prefers-reduced-motion: reduce) {
+  .card, .wide { opacity: 1; transform: none; transition: none; }
+}
+
+/* ---------- Toast tipleri ---------- */
+.toast[data-type="success"] { background: #1a6b3c; color: #fff; }
+.toast[data-type="error"] { background: var(--red); color: #fff; }
+.toast[data-type="info"] { /* mevcut varsayılan */ }
+
+/* ---------- Chips mobil scroll ---------- */
+.chips::-webkit-scrollbar { display: none; }
+.chip.on { box-shadow: 0 0 0 2px var(--text); }
+
+/* ---------- Hero puan badge ---------- */
+.hero-meta .score { background: rgba(0,0,0,.5); border-radius: 20px; padding: 4px 10px; border: 1px solid rgba(255,255,255,.2); font-size: 15px; font-weight: 700; }
+
+/* ---------- Bölüm thumbnail hover ---------- */
+.ep-thumb { transition: transform .2s; }
+.ep:hover .ep-thumb { transform: scale(1.04); }
+
+/* ---------- Hero zenginleştirme ---------- */
+.hero-text { font-size: clamp(15px, 1.6vw, 18px); -webkit-line-clamp: 4; }
+
+/* ---------- Hamburger menü (≤ 760px) ---------- */
+.hamburger { display: none; }
+@media (max-width: 760px) {
+  .hamburger {
+    display: grid;
+    place-items: center;
+    order: 2;
+    margin-left: auto;
+    width: 38px; height: 38px;
+    border: 1px solid var(--line);
+    background: var(--bg-2);
+    border-radius: 8px;
+  }
+  .hamburger svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+  /* Nav mobilde gizli, hamburger ile açılır */
+  .nav {
+    display: none;
+    position: fixed; top: 64px; left: 0; right: 0; bottom: 0;
+    background: var(--bg);
+    flex-direction: column;
+    padding: 16px var(--gutter);
+    gap: 0;
+    z-index: 19;
+    overflow-y: auto;
+    order: unset;
+    width: 100%;
+  }
+  .nav.open { display: flex; }
+  .nav a { padding: 16px 0; border-bottom: 1px solid var(--line); font-size: 18px; white-space: normal; }
+  .nav a[aria-current]::after { display: none; }
+  .top-actions { margin-left: auto; }
+}
+
+/* ---------- Sonsuz scroll sentinel ---------- */
+#more { display: none; }
+
+/* ---------- Glassmorphism: arama dialog ---------- */
+.search {
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+}
+
 /* Cloudflare sürümünde bilgisayardaki dosyalar yok */
 :root[data-mode="cloud"] [data-nav="bilgisayarim"] { display: none; }

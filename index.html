@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Onest:wght@400;500;600;700&display=swap">
 <script>try{const t=localStorage.getItem('lovell.theme');if(t)document.documentElement.dataset.theme=t}catch{}</script>
-<link rel="stylesheet" href="/src/style.css?v=4">
+<link rel="stylesheet" href="/src/style.css?v=5">
 </head>
 <body>
 <a class="skip" href="#main">İçeriğe geç</a>
@@ -20,7 +20,7 @@
     <a class="logo" href="#/" aria-label="LOVELL ana sayfa">
       <svg viewBox="0 0 212 56" aria-hidden="true"><g transform="skewX(-9) translate(8 0)"><g fill="currentColor"><path d="M0 6h10v34h16v10H0z"/><path d="M74 6h11l7 30 7-30h11l-12 44H86z"/><path d="M116 6h24v10h-14v7h11v10h-11v7h14v10h-24z"/><path d="M146 6h10v34h16v10h-26z"/><path d="M178 6h10v34h16v10h-26z"/></g><path class="logo-o" fill-rule="evenodd" d="M50 6a18 18 0 0 1 18 18v8a18 18 0 0 1-36 0v-8A18 18 0 0 1 50 6zM45 17v22l14-11z"/></g></svg>
     </a>
-    <nav class="nav" aria-label="Ana menü">
+    <nav class="nav" id="main-nav" aria-label="Ana menü">
       <a href="#/" data-nav="home">Ana sayfa</a>
       <a href="#/kesfet" data-nav="kesfet">Diziler</a>
       <a href="#/filmler" data-nav="filmler">Filmler</a>
@@ -28,6 +28,9 @@
       <a href="#/bilgisayarim" data-nav="bilgisayarim">Bilgisayarımda</a>
     </nav>
     <div class="top-actions">
+      <button class="hamburger icon-btn" id="hamburger" type="button" aria-label="Menüyü aç" aria-expanded="false" aria-controls="main-nav">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16" stroke-linecap="round"/></svg>
+      </button>
       <button class="search-open" id="search-open" type="button" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
         <span>Anime ara</span><kbd>/</kbd>
@@ -64,6 +67,6 @@
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="/src/main.js?v=4"></script>
+<script type="module" src="/src/main.js?v=5"></script>
 </body>
 </html>

@@ -223,7 +223,7 @@ async function api(url, env) {
         const params = new URLSearchParams({tmdbId: id, type: kind === 'movie' ? 'movie' : 'tv'});
         if (kind !== 'movie') { params.set('season', String(season)); params.set('episode', String(episode)); }
         const r = await fetch(`${env.CINEPRO_URL}/scrape?${params}`, {
-          signal: AbortSignal.timeout(12000),
+          signal: AbortSignal.timeout(55000),
           headers: {Accept: 'application/json'},
           cf: {cacheTtl: 3600, cacheEverything: false},
         });
