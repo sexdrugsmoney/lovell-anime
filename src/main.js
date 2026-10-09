@@ -146,11 +146,15 @@ function skeletonGrid(count = 12) {
 }
 
 // ---------------- IntersectionObserver kart animasyonu ----------------
+let _cardIo = null; // observeCards observer — route değişiminde temizlenir
 function observeCards(root = document) {
   if (reduceMotion) return;
+  // Önceki observer'ı temizle (observer birikimini önle)
+  if (_cardIo) { _cardIo.disconnect(); _cardIo = null; }
   const io = new IntersectionObserver((entries) => {
     entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } });
   }, {threshold: 0.08});
+  _cardIo = io;
   $$('.card, .wide', root).forEach(c => io.observe(c));
 }
 
@@ -450,7 +454,9 @@ async function loadSources(ctx) {
   const alId = ctx.a.anilistId || '';
   $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar aranıyor…<br><small style="color:#888;font-size:13px">(İlk açılışta 50 saniyeye kadar sürebilir)</small></div>`;
   try {
-    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`);
+    // CinePro sunucu tarafında 55 saniyelik timeout kullanıyor;
+    // istemci tarafının bunu kesmemesi için 65000ms veriyoruz.
+    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`, 65000);
   } catch {
     d = {sources: [], embeds: [], folder: `${ctx.a.kind}-${ctx.a.id}`};
   }
@@ -523,6 +529,23 @@ function mountEmbed(ctx, index) {
 
   stage.querySelectorAll('[data-embed]').forEach(btn => btn.onclick = () => mountEmbed(ctx, Number(btn.dataset.embed)));
 
+  // Embed iframe hata tespiti: X-Frame-Options vb. engelinde kullanıcıya uyarı göster.
+  // İframe load olayını 15 saniye dinle; tetiklenmezse uyarı ekle.
+  const iframeEl = stage.querySelector('.vidrift-frame');
+  let embedLoaded = false;
+  if (iframeEl) {
+    iframeEl.addEventListener('load', () => { embedLoaded = true; }, {once: true});
+  }
+  const embedErrorTimer = setTimeout(() => {
+    if (!document.contains(stage)) return;
+    if (embedLoaded) return;
+    const warn = document.createElement('div');
+    warn.className = 'stage-error';
+    warn.setAttribute('role', 'alert');
+    warn.innerHTML = '<p>Bu kaynak yüklenemedi. Farklı bir kaynak deneyin.</p>';
+    stage.querySelector('.stage-inner')?.prepend(warn);
+  }, 15000);
+
   // VidRift postMessage
   const vidriftOrigin = 'https://embed.vidrift.net';
   const onVidrift = e => {
@@ -550,6 +573,7 @@ function mountEmbed(ctx, index) {
     cleanup: [
       () => window.removeEventListener('message', onVidrift),
       () => window.removeEventListener('message', onVidy),
+      () => clearTimeout(embedErrorTimer),
     ]
   };
 
@@ -746,7 +770,7 @@ if (hamburger && mainNav) {
   hamburger.onclick = () => {
     const open = mainNav.classList.toggle('open');
     hamburger.setAttribute('aria-expanded', String(open));
-    mainNav.setAttribute('aria-modal', open ? 'true' : 'false');
+    // aria-modal yalnızca role="dialog" üzerinde anlamlı; <nav> üzerinde kullanılmaz.
     // Odak yönetimi: menü açıldığında ilk nav linkine odaklan
     if (open) {
       const firstLink = mainNav.querySelector('a');
@@ -758,7 +782,6 @@ if (hamburger && mainNav) {
     if (e.target.closest('a')) {
       mainNav.classList.remove('open');
       hamburger.setAttribute('aria-expanded', 'false');
-      mainNav.setAttribute('aria-modal', 'false');
     }
   });
   // Focus-trap: Tab / Shift+Tab döngüsü nav içinde kalır (menü açıkken)
@@ -808,6 +831,7 @@ async function route() {
   const v = ++routeId;
   destroyPlayer();
   if (_scrollIo) { _scrollIo.disconnect(); _scrollIo = null; }
+  if (_cardIo) { _cardIo.disconnect(); _cardIo = null; }
   clearTimeout(heroTimer);
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const parts = path.split('/').filter(Boolean);
