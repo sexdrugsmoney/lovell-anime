@@ -485,3 +485,59 @@ dialog::backdrop { background: rgba(5, 6, 16, .62); backdrop-filter: blur(3px); 
 
 /* Cloudflare sürümünde bilgisayardaki dosyalar yok */
 :root[data-mode="cloud"] [data-nav="bilgisayarim"] { display: none; }
+
+/* ========== Tab çubuğu ========== */
+.tab-bar {
+  display: flex;
+  gap: 4px;
+  background: var(--bg-2, #1a1d2e);
+  border: 1px solid var(--line, rgba(255,255,255,.08));
+  border-radius: 10px;
+  padding: 3px;
+  margin: 0 auto 0 16px;
+}
+.tab-btn {
+  height: 34px;
+  padding: 0 16px;
+  border-radius: 7px;
+  border: 0;
+  cursor: pointer;
+  background: transparent;
+  color: var(--dim, #8892b0);
+  font-weight: 600;
+  font-size: 14px;
+  white-space: nowrap;
+  transition: background .15s, color .15s;
+}
+.tab-btn:hover { color: var(--text, #e8eaf6); }
+.tab-btn.active,
+.tab-btn[aria-selected="true"] {
+  background: var(--red, #e4202b);
+  color: #fff;
+  box-shadow: 0 1px 6px rgba(228,32,43,.35);
+}
+
+/* Tab içerik giriş animasyonu */
+@keyframes tab-fade {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: none; }
+}
+.tab-content-enter { animation: tab-fade .22s ease both; }
+@media (prefers-reduced-motion: reduce) { .tab-content-enter { animation: none; } }
+
+/* ========== Embed chip pill ========== */
+.source-chip {
+  border-radius: 20px;
+  transition: background .12s, border-color .12s, color .12s;
+}
+.source-chip:hover {
+  background: #252535;
+  border-color: #666;
+  color: #fff;
+}
+.source-chip.on {
+  background: var(--red, #e4202b);
+  border-color: var(--red, #e4202b);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(228,32,43,.28);
+}

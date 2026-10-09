@@ -61,8 +61,59 @@ function buildEmbeds(kind, id, alId, season, episode, opts = {}) {
     add('vidrock', 'VidRock', vrBase);
   }
 
+  // VidSrc.io — TMDB
+  if (kind !== 'al') {
+    const vsioBase = kind === 'movie'
+      ? `https://vidsrc.io/embed/movie/${id}`
+      : `https://vidsrc.io/embed/tv/${id}/${season}/${episode}`;
+    add('vidsrcio', 'VidSrc.io', vsioBase);
+  }
+
+  // VidSrc.to — TMDB
+  if (kind !== 'al') {
+    const vstoBase = kind === 'movie'
+      ? `https://vidsrc.to/embed/movie/${id}`
+      : `https://vidsrc.to/embed/tv/${id}/${season}/${episode}`;
+    add('vidsrcto', 'VidSrc.to', vstoBase);
+  }
+
+  // VidSrc.mov — TMDB
+  if (kind !== 'al') {
+    const vsmovBase = kind === 'movie'
+      ? `https://vidsrc.mov/embed/movie/${id}`
+      : `https://vidsrc.mov/embed/tv/${id}/${season}/${episode}`;
+    add('vidsrcmov', 'VidSrc.mov', vsmovBase);
+  }
+
+  // VidLink — TMDB
+  if (kind !== 'al') {
+    const vlBase = kind === 'movie'
+      ? `https://vidlink.pro/movie/${id}`
+      : `https://vidlink.pro/tv/${id}/${season}/${episode}`;
+    const vlp = new URLSearchParams();
+    vlp.set('primaryColor', color);
+    vlp.set('title', 'true');
+    if (kind === 'tv') vlp.set('nextbutton', 'true');
+    add('vidlink', 'VidLink', `${vlBase}?${vlp}`);
+  }
+
   // MegaPlay — AniList (anime)
   if (alId) add('megaplay', 'MegaPlay', `https://megaplay.buzz/stream/ani/${alId}/${episode}/sub`);
+
+  // VidHawk — AniList (anime)
+  if (kind === 'al' && alId) {
+    add('vidhawk', 'VidHawk', `https://vidhawk.buzz/embed/ani/${alId}/${episode}/sub?server=flow&autoskipIntro=1&autoskipOutro=1`);
+  }
+
+  // JustPlay — AniList (anime)
+  if (kind === 'al' && alId) {
+    add('justplay', 'JustPlay', `https://justplay.boo/?ani=${alId}&ep=${episode}&lang=sub&autoskip=1`);
+  }
+
+  // AniEmbed — AniList (anime)
+  if (kind === 'al' && alId) {
+    add('aniembed', 'AniEmbed', `https://aniembed.se/e/${alId}/${episode}`);
+  }
 
   return list;
 }

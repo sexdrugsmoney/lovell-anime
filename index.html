@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Onest:wght@400;500;600;700&display=swap">
 <script>try{const t=localStorage.getItem('lovell.theme');if(t)document.documentElement.dataset.theme=t}catch{}</script>
-<link rel="stylesheet" href="/src/style.css?v=5">
+<link rel="stylesheet" href="/src/style.css?v=6">
 </head>
 <body>
 <a class="skip" href="#main">İçeriğe geç</a>
@@ -20,6 +20,10 @@
     <a class="logo" href="#/" aria-label="LOVELL ana sayfa">
       <svg viewBox="0 0 212 56" aria-hidden="true"><g transform="skewX(-9) translate(8 0)"><g fill="currentColor"><path d="M0 6h10v34h16v10H0z"/><path d="M74 6h11l7 30 7-30h11l-12 44H86z"/><path d="M116 6h24v10h-14v7h11v10h-11v7h14v10h-24z"/><path d="M146 6h10v34h16v10h-26z"/><path d="M178 6h10v34h16v10h-26z"/></g><path class="logo-o" fill-rule="evenodd" d="M50 6a18 18 0 0 1 18 18v8a18 18 0 0 1-36 0v-8A18 18 0 0 1 50 6zM45 17v22l14-11z"/></g></svg>
     </a>
+    <div class="tab-bar" role="tablist" aria-label="İçerik türü">
+      <button class="tab-btn active" role="tab" aria-selected="true" data-tab="anime" type="button">🎌 Anime</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="movies" type="button">🎬 Film &amp; Dizi</button>
+    </div>
     <nav class="nav" id="main-nav" aria-label="Ana menü">
       <a href="#/" data-nav="home">Ana sayfa</a>
       <a href="#/kesfet" data-nav="kesfet">Diziler</a>
@@ -33,7 +37,7 @@
       </button>
       <button class="search-open" id="search-open" type="button" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
-        <span>Anime ara</span><kbd>/</kbd>
+        <span id="search-label">Ara</span><kbd>/</kbd>
       </button>
       <button class="icon-btn" id="theme" type="button" aria-label="Açık temaya geç">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path class="sun" d="M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m11.4 0 1.4 1.4M4.9 4.9l1.4 1.4"/><circle class="sun" cx="12" cy="12" r="4"/><path class="moon" d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>

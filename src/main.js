@@ -33,6 +33,23 @@ function updateCount() {
   c.textContent = myList.length;
   c.hidden = !myList.length;
 }
+
+// ---------------- Tab yönetimi ----------------
+let currentTab = store.get('tab', 'anime'); // 'anime' | 'movies'
+
+function setTab(tab) {
+  currentTab = tab;
+  store.set('tab', tab);
+  $$('.tab-btn').forEach(b => {
+    const on = b.dataset.tab === tab;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  const sl = $('#search-label');
+  if (sl) sl.textContent = tab === 'anime' ? 'Anime ara' : 'Film / Dizi ara';
+  const si = $('#search-input');
+  if (si) si.placeholder = tab === 'anime' ? 'Anime adı yaz' : 'Film veya dizi adı yaz';
+}
 function saveProgress(a, s, e, t, d) {
   if (!(t > 0) || !(d > 0)) return;
   progress[`${keyOf(a)}:${s}:${e}`] = {t: Math.round(t), d: Math.round(d), at: Date.now()};
@@ -197,17 +214,28 @@ async function viewHome(v) {
   let data;
   try { data = await api('/api/home'); } catch (e) { if (v === routeId) main.innerHTML = errorBox(e); return; }
   if (v !== routeId) return;
-  const recents = Object.values(recent).sort((a, b) => b.at - a.at).slice(0, 10);
-  const listed = myList.slice(0, 18);
-  main.innerHTML = `${heroView(data.hero)}
-    <div class="page">
+
+  // Tab'a göre içerik filtrele
+  const isAnimeTab = currentTab === 'anime';
+  const filterItem = a => isAnimeTab ? (a.kind === 'al' || a.genre === 'anime' || a.kind === 'tv') : (a.kind === 'movie' || a.kind === 'tv');
+  // anime tab → tüm içerik (mevcut davranış), movies tab → sadece film/dizi
+  const hero = isAnimeTab ? data.hero : (data.hero.filter(a => a.kind !== 'al').length ? data.hero.filter(a => a.kind !== 'al') : data.hero.slice(0, 5));
+  const shelves = isAnimeTab ? data.shelves : data.shelves.map(s => ({...s, items: s.items.filter(a => a.kind !== 'al')})).filter(s => s.items?.length);
+
+  const recents = Object.values(recent).sort((a, b) => b.at - a.at)
+    .filter(r => isAnimeTab ? true : r.item?.kind !== 'al')
+    .slice(0, 10);
+  const listed = myList.filter(a => isAnimeTab ? true : a.kind !== 'al').slice(0, 18);
+
+  main.innerHTML = `${heroView(hero)}
+    <div class="page tab-content-enter">
       ${shelf({title: 'Kaldığın yerden', items: recents, wide: true})}
-      ${data.shelves.slice(0, 1).map(shelf).join('')}
+      ${shelves.slice(0, 1).map(shelf).join('')}
       ${shelf({title: 'Listendekiler', items: listed, more: '#/listem'})}
-      ${data.shelves.slice(1).map(shelf).join('')}
+      ${shelves.slice(1).map(shelf).join('')}
       ${genreLinks()}
     </div>`;
-  bindHero(data.hero);
+  bindHero(hero);
   bindShelves();
   imgFallback();
   observeCards();
@@ -226,7 +254,7 @@ async function viewBrowse(v, kind, params) {
   const base = kind === 'movie' ? '#/filmler' : '#/kesfet';
   const link = o => { const p = new URLSearchParams({tur: genre, sirala: sort, ara: q, ...o}); [...p.keys()].forEach(k => !p.get(k) && p.delete(k)); return base + (p.toString() ? '?' + p : ''); };
   main.innerHTML = `<div class="page">
-    <header class="page-head"><h1>${kind === 'movie' ? 'Anime filmleri' : 'Anime dizileri'}</h1>
+    <header class="page-head"><h1>${kind === 'movie' ? (currentTab === 'movies' ? 'Filmler' : 'Anime filmleri') : (currentTab === 'movies' ? 'Diziler' : 'Anime dizileri')}</h1>
       <form class="filter-search" role="search"><input name="ara" type="search" value="${esc(q)}" placeholder="${kind === 'movie' ? 'Filmlerde ara' : 'Dizilerde ara'}" aria-label="Ara"></form></header>
     <div class="filters">
       <div class="chips" role="list"><a role="listitem" class="chip ${!genre ? 'on' : ''}" href="${link({tur: ''})}">Hepsi</a>${genres.map(g => `<a role="listitem" class="chip ${genre === g.slug ? 'on' : ''}" href="${link({tur: g.slug})}">${esc(g.name)}</a>`).join('')}</div>
@@ -852,6 +880,18 @@ if (/^#watch\?/.test(location.hash)) { const p = new URLSearchParams(location.ha
 window.addEventListener('hashchange', route);
 window.addEventListener('pagehide', destroyPlayer);
 updateCount();
+// Tab butonlarını bağla
+$$('.tab-btn').forEach(b => b.addEventListener('click', () => {
+  if (b.dataset.tab !== currentTab) {
+    setTab(b.dataset.tab);
+    // Ana sayfadaysa içeriği yenile
+    const [path] = location.hash.replace(/^#\/?/, '').split('?');
+    const section = path.split('/').filter(Boolean)[0] || 'home';
+    if (section === 'home') route();
+  }
+}));
+// Sayfa yüklenince tab butonlarını senkronize et
+setTab(currentTab);
 Promise.all([
   api('/api/genres').then(g => genres = g).catch(() => {}),
   api('/api/status').then(s => { CLOUD = s.mode === 'cloud'; document.documentElement.dataset.mode = CLOUD ? 'cloud' : 'local'; }).catch(() => {}),
