@@ -235,11 +235,10 @@ async function viewBrowse(v, kind, params) {
   $('.filter-search').onsubmit = e => { e.preventDefault(); location.hash = link({ara: e.target.ara.value.trim()}); };
   let page = 1;
   let loadingMore = false;
-  let scrollIo = null;
   const load = async () => {
     if (loadingMore) return;
     // Temizle: önceki observer varsa bağlantısını kes (observer birikimini önle)
-    if (scrollIo) { scrollIo.disconnect(); scrollIo = null; }
+    if (_scrollIo) { _scrollIo.disconnect(); _scrollIo = null; }
     loadingMore = true;
     if (page === 1) {
       $('#grid').innerHTML = skeletonGrid();
@@ -265,10 +264,10 @@ async function viewBrowse(v, kind, params) {
         // Sonsuz scroll sentinel
         $('#more-wrap').innerHTML = '<div id="scroll-sentinel" style="height:1px"></div>';
         const sentinel = $('#scroll-sentinel');
-        scrollIo = new IntersectionObserver(entries => {
+        _scrollIo = new IntersectionObserver(entries => {
           if (entries[0].isIntersecting && !loadingMore) { page++; load(); }
         }, {rootMargin: '200px'});
-        scrollIo.observe(sentinel);
+        _scrollIo.observe(sentinel);
       } else {
         $('#more-wrap').innerHTML = '';
       }
@@ -747,6 +746,7 @@ if (hamburger && mainNav) {
   hamburger.onclick = () => {
     const open = mainNav.classList.toggle('open');
     hamburger.setAttribute('aria-expanded', String(open));
+    mainNav.setAttribute('aria-modal', open ? 'true' : 'false');
     // Odak yönetimi: menü açıldığında ilk nav linkine odaklan
     if (open) {
       const firstLink = mainNav.querySelector('a');
@@ -758,6 +758,19 @@ if (hamburger && mainNav) {
     if (e.target.closest('a')) {
       mainNav.classList.remove('open');
       hamburger.setAttribute('aria-expanded', 'false');
+      mainNav.setAttribute('aria-modal', 'false');
+    }
+  });
+  // Focus-trap: Tab / Shift+Tab döngüsü nav içinde kalır (menü açıkken)
+  mainNav.addEventListener('keydown', e => {
+    if (!mainNav.classList.contains('open') || e.key !== 'Tab') return;
+    const focusable = [...mainNav.querySelectorAll('a, button, [tabindex]:not([tabindex="-1"])')].filter(el => !el.disabled);
+    if (!focusable.length) return;
+    const first = focusable[0], last = focusable[focusable.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { e.preventDefault(); last.focus(); }
+    } else {
+      if (document.activeElement === last) { e.preventDefault(); first.focus(); }
     }
   });
 }
@@ -790,9 +803,11 @@ function setStatus(source) {
 
 // ---------------- Yönlendirme ----------------
 let routeId = 0;
+let _scrollIo = null; // viewBrowse sonsuz scroll observer — route değişiminde temizlenir
 async function route() {
   const v = ++routeId;
   destroyPlayer();
+  if (_scrollIo) { _scrollIo.disconnect(); _scrollIo = null; }
   clearTimeout(heroTimer);
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const parts = path.split('/').filter(Boolean);
