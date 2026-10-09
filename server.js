@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {ROOT} from './lib/env.js';
 import {tmdbGet, netStatus} from './lib/net.js';
-import {browse, search, home, detail, episodes, GENRES, dataErrors} from './lib/catalog.js';
+import {browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from './lib/catalog.js';
 import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, cineproSources} from './lib/media.js';
 
 const TYPES = {
@@ -135,10 +135,10 @@ export const server = http.createServer(async (req, res) => {
   try {
     // ---- API ----
     if (u.pathname === '/api/status') return json(res, 200, {...netStatus(), dataErrors, mediaDir: MEDIA_DIR(), library: library().length});
-    if (u.pathname === '/api/genres') return json(res, 200, GENRES.map(({slug, name}) => ({slug, name})), 86400);
-    if (u.pathname === '/api/home') return json(res, 200, await home(), 300);
-    if (u.pathname === '/api/browse') return json(res, 200, await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || ''}), 300);
-    if (u.pathname === '/api/search') return json(res, 200, await search(q.get('q')), 300);
+    if (u.pathname === '/api/genres') return json(res, 200, genresFor(q.get('section')), 86400);
+    if (u.pathname === '/api/home') return json(res, 200, await home(q.get('section')), 300);
+    if (u.pathname === '/api/browse') return json(res, 200, await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 300);
+    if (u.pathname === '/api/search') return json(res, 200, await search(q.get('q'), q.get('section')), 300);
     let m = u.pathname.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
     if (m) return json(res, 200, await detail(m[1], m[2]), 600);
     m = u.pathname.match(/^\/api\/episodes\/(tv|movie|al)\/(\d{1,9})$/);

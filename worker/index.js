@@ -1,7 +1,7 @@
 // LOVELL — Cloudflare Workers sürümü.
 // Statik dosyalar (dist/) Workers Static Assets ile, /api/* uçları bu betikle sunulur.
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
-import {configure, browse, search, home, detail, episodes, GENRES, dataErrors} from '../lib/catalog-core.js';
+import {configure, browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
@@ -248,10 +248,10 @@ async function api(url, env) {
   const q = url.searchParams;
   const path = url.pathname;
   if (path === '/api/status') return json({mode: 'cloud', tmdb: authProblem ? 'anahtar geçersiz' : lastOk ? 'bağlı' : 'henüz denenmedi', authProblem, lastSuccess: lastOk, auth: env.TMDB_READ_TOKEN ? 'okuma jetonu (v4)' : env.TMDB_API_KEY ? 'API anahtarı' : 'yok', dataErrors, library: 0});
-  if (path === '/api/genres') return json(GENRES.map(({slug, name}) => ({slug, name})), 200, 86400);
-  if (path === '/api/home') return json(await home(), 200, 300);
-  if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || ''}), 200, 300);
-  if (path === '/api/search') return json(await search(q.get('q')), 200, 300);
+  if (path === '/api/genres') return json(genresFor(q.get('section')), 200, 86400);
+  if (path === '/api/home') return json(await home(q.get('section')), 200, 300);
+  if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 200, 300);
+  if (path === '/api/search') return json(await search(q.get('q'), q.get('section')), 200, 300);
   let m = path.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
   if (m) return json(await detail(m[1], m[2]), 200, 600);
   m = path.match(/^\/api\/episodes\/(tv|movie|al)\/(\d{1,9})$/);

@@ -486,37 +486,6 @@ dialog::backdrop { background: rgba(5, 6, 16, .62); backdrop-filter: blur(3px); 
 /* Cloudflare sürümünde bilgisayardaki dosyalar yok */
 :root[data-mode="cloud"] [data-nav="bilgisayarim"] { display: none; }
 
-/* ========== Tab çubuğu ========== */
-.tab-bar {
-  display: flex;
-  gap: 4px;
-  background: var(--bg-2, #1a1d2e);
-  border: 1px solid var(--line, rgba(255,255,255,.08));
-  border-radius: 10px;
-  padding: 3px;
-  margin: 0 auto 0 16px;
-}
-.tab-btn {
-  height: 34px;
-  padding: 0 16px;
-  border-radius: 7px;
-  border: 0;
-  cursor: pointer;
-  background: transparent;
-  color: var(--dim, #8892b0);
-  font-weight: 600;
-  font-size: 14px;
-  white-space: nowrap;
-  transition: background .15s, color .15s;
-}
-.tab-btn:hover { color: var(--text, #e8eaf6); }
-.tab-btn.active,
-.tab-btn[aria-selected="true"] {
-  background: var(--red, #e4202b);
-  color: #fff;
-  box-shadow: 0 1px 6px rgba(228,32,43,.35);
-}
-
 /* Tab içerik giriş animasyonu */
 @keyframes tab-fade {
   from { opacity: 0; transform: translateY(8px); }
@@ -540,4 +509,293 @@ dialog::backdrop { background: rgba(5, 6, 16, .62); backdrop-filter: blur(3px); 
   border-color: var(--red, #e4202b);
   color: #fff;
   box-shadow: 0 0 0 2px rgba(228,32,43,.28);
+}
+
+/* =====================================================================
+   İKİ BÖLÜMLÜ ARAYÜZ (v7)
+   html[data-section="anime"]  → mor-pembe, afiş ağırlıklı, Japonca dokunuşlar
+   html[data-section="media"]  → Netflix sadeliği: siyah zemin, kırmızı, yatay kartlar
+   ===================================================================== */
+
+/* ---------- Bölüm temaları ---------- */
+:root[data-section="anime"] {
+  --bg: #0d0b16; --bg-2: #161329; --bg-3: #221d3b; --line: #2e2850;
+  --text: #f4f2ff; --dim: #b4aed6; --faint: #7a739f;
+  --red: #ff3d7f; --red-2: #8b5cf6; --red-ink: #fff; --blue: #b49bff;
+  --grad: linear-gradient(120deg, #ff3d7f 0%, #c045e8 55%, #8b5cf6 100%);
+  --hero-fade: #0d0b16; --radius: 12px; --ring: #b49bff;
+}
+:root[data-section="anime"][data-theme="light"] {
+  --bg: #faf8ff; --bg-2: #f1edfb; --bg-3: #e6e0f7; --line: #dcd5f0;
+  --text: #18132e; --dim: #5d5680; --faint: #8d87ad;
+  --red: #e0266b; --red-2: #7c3aed; --blue: #6d4bd8; --ring: #6d4bd8;
+}
+:root[data-section="media"] {
+  --bg: #111111; --bg-2: #1b1b1b; --bg-3: #262626; --line: #333333;
+  --text: #f5f5f1; --dim: #b3b3b3; --faint: #808080;
+  --red: #e50914; --red-2: #b20710; --red-ink: #fff; --blue: #e50914;
+  --grad: linear-gradient(120deg, #e50914, #b20710);
+  --hero-fade: #111111; --radius: 6px; --ring: #ffffff;
+}
+:root[data-section="media"][data-theme="light"] {
+  --bg: #ffffff; --bg-2: #f5f5f5; --bg-3: #ebebeb; --line: #dddddd;
+  --text: #141414; --dim: #5f5f5f; --faint: #8c8c8c; --ring: #141414;
+}
+body { transition: background-color .3s ease, color .3s ease; }
+:focus-visible { outline-color: var(--ring, var(--blue)); }
+
+/* ---------- Bölüm değiştirici ---------- */
+.tab-bar {
+  position: relative; display: grid; grid-template-columns: 1fr 1fr;
+  padding: 3px; margin: 0 4px 0 -12px; flex: none;
+  background: var(--bg-2); border: 1px solid var(--line); border-radius: 999px;
+}
+.tab-glider {
+  position: absolute; top: 3px; bottom: 3px; left: 3px; width: calc(50% - 3px);
+  border-radius: 999px; background: var(--grad);
+  transform: translateX(calc(var(--i, 0) * 100%));
+  transition: transform .35s cubic-bezier(.3, 1.3, .5, 1), background .3s;
+  box-shadow: 0 4px 16px -4px color-mix(in srgb, var(--red) 70%, transparent);
+}
+:root[data-section="media"] .tab-glider { --i: 1; }
+:root[data-section="anime"] .tab-glider { --i: 0; }
+.tab-btn {
+  position: relative; z-index: 1; display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  height: 34px; padding: 0 16px; border: 0; border-radius: 999px; background: transparent;
+  color: var(--dim); font-weight: 650; font-size: 14px; white-space: nowrap; transition: color .2s;
+}
+.tab-btn svg { width: 15px; height: 15px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linejoin: round; }
+.tab-btn[data-tab="anime"] svg path { fill: currentColor; stroke: none; }
+.tab-btn[data-tab="media"] svg path { fill: currentColor; stroke: none; }
+.tab-btn:hover { color: var(--text); }
+.tab-btn.active, .tab-btn[aria-selected="true"] { color: #fff; background: transparent; box-shadow: none; }
+
+/* ---------- Üst çubuk ---------- */
+:root[data-section="anime"] .logo { color: var(--red); }
+:root[data-section="anime"] .nav a[aria-current]::after { background: var(--grad); height: 3px; }
+:root[data-section="media"] .top { background: linear-gradient(180deg, rgba(0,0,0,.78), rgba(0,0,0,0)); border-bottom: 0; backdrop-filter: none; -webkit-backdrop-filter: none; transition: background-color .3s; }
+:root[data-section="media"] .top.scrolled { background: color-mix(in srgb, var(--bg) 96%, transparent); }
+:root[data-section="media"][data-theme="light"] .top:not(.scrolled) { --text: #fff; --dim: #e5e5e5; --line: rgba(255,255,255,.3); --bg-2: rgba(0,0,0,.35); color: #fff; }
+:root[data-section="media"] .nav { gap: 22px; font-size: 14px; }
+:root[data-section="media"] .nav a { color: #e5e5e5; }
+:root[data-section="media"][data-theme="light"] .top.scrolled .nav a { color: var(--dim); }
+:root[data-section="media"] .nav a[aria-current] { color: var(--text); font-weight: 700; }
+:root[data-section="media"] .nav a[aria-current]::after { display: none; }
+:root[data-section="media"] .search-open, :root[data-section="media"] .icon-btn { background: rgba(0,0,0,.35); }
+:root[data-section="media"] .top.scrolled .search-open, :root[data-section="media"] .top.scrolled .icon-btn { background: var(--bg-2); }
+
+/* ---------- Düğmeler ---------- */
+:root[data-section="anime"] .btn-play { background: var(--grad); border-radius: 999px; box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--red) 80%, transparent); }
+:root[data-section="anime"] .btn-play:hover { filter: brightness(1.08); background: var(--grad); }
+:root[data-section="anime"] .hero .btn-ghost { border-radius: 999px; backdrop-filter: blur(8px); }
+:root[data-section="media"] .hero .btn-play { background: #fff; color: #000; border-radius: 4px; padding: 0 26px; font-size: 17px; }
+:root[data-section="media"] .hero .btn-play:hover { background: rgba(255,255,255,.78); }
+:root[data-section="media"] .hero .btn-ghost { background: rgba(109,109,110,.7); border: 0; border-radius: 4px; padding: 0 22px; font-size: 17px; }
+:root[data-section="media"] .hero .btn-ghost:hover { background: rgba(109,109,110,.5); }
+:root[data-section="media"] .btn { border-radius: 4px; }
+
+/* ---------- Vitrin (ortak) ---------- */
+.hero-shade { background:
+  linear-gradient(90deg, rgba(0,0,0,.92) 0%, rgba(0,0,0,.62) 34%, rgba(0,0,0,0) 70%),
+  linear-gradient(0deg, var(--hero-fade, #090909) 0%, transparent 34%); }
+.hero-eyebrow { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; color: #d8d4ee; font-size: 13px; font-weight: 700; letter-spacing: .12em; font-variant-numeric: tabular-nums; }
+.hero-skeleton { background: var(--bg-2); animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .65; } }
+
+/* Anime vitrini: mor ton, havada duran afiş, dikey Japonca başlık */
+:root[data-section="anime"] .hero { background: #0d0b16; }
+:root[data-section="anime"] .hero-shade { background:
+  radial-gradient(120% 90% at 0% 100%, rgba(13,11,22,.96) 20%, rgba(13,11,22,.55) 55%, transparent 80%),
+  linear-gradient(90deg, rgba(13,11,22,.9), rgba(40,14,60,.35) 60%, rgba(13,11,22,.55)),
+  linear-gradient(0deg, var(--hero-fade) 0%, transparent 30%); }
+:root[data-section="anime"] .hero-bg img { filter: saturate(1.15); }
+:root[data-section="anime"] .hero-eyebrow .pill { background: var(--grad); color: #fff; padding: 4px 10px; border-radius: 999px; letter-spacing: .06em; }
+:root[data-section="anime"] .hero-title { font-style: italic; font-stretch: 68%; }
+.hero-native {
+  position: absolute; z-index: 1; right: calc(var(--gutter) - 6px); top: 96px; max-height: calc(100% - 200px); overflow: hidden;
+  writing-mode: vertical-rl; font: 900 clamp(38px, 4.6vw, 76px)/1 "Hiragino Mincho ProN", "Yu Mincho", "Noto Serif JP", serif;
+  color: transparent; -webkit-text-stroke: 1px rgba(255,255,255,.4); letter-spacing: .08em; pointer-events: none;
+  animation: rise 1s ease-out both;
+}
+.hero-poster {
+  position: absolute; z-index: 1; right: calc(var(--gutter) + clamp(70px, 7vw, 120px)); top: 50%;
+  width: clamp(170px, 15vw, 240px); transform: translateY(-62%) rotate(3deg);
+}
+.hero-poster img { width: 100%; aspect-ratio: 2 / 3; object-fit: cover; border-radius: 14px; box-shadow: 0 30px 60px -20px rgba(0,0,0,.8), 0 0 0 1px rgba(255,255,255,.12), 0 0 70px -10px rgba(192,69,232,.55); animation: float 6s ease-in-out infinite, rise .8s ease-out both; }
+@keyframes float { 50% { transform: translateY(-10px); } }
+@keyframes rise { from { opacity: 0; translate: 0 18px; } }
+:root[data-section="anime"] .hero-strip .thumb { border-radius: 10px; }
+:root[data-section="anime"] .hero-strip .thumb i { background: var(--grad); }
+
+/* Film & Dizi vitrini: Netflix gibi tam ekran, başlık altından girer */
+:root[data-section="media"] .hero { margin-top: -64px; min-height: min(86vh, 820px); background: #000; }
+:root[data-section="media"] .hero-shade { background:
+  linear-gradient(77deg, rgba(0,0,0,.82) 0%, rgba(0,0,0,.45) 38%, rgba(0,0,0,0) 72%),
+  linear-gradient(0deg, var(--hero-fade) 0%, rgba(17,17,17,.6) 14%, transparent 34%); }
+:root[data-section="media"] .hero-body { padding-bottom: 150px; }
+:root[data-section="media"] .hero-title { font-stretch: 78%; font-weight: 900; letter-spacing: -.02em; text-shadow: 0 2px 30px rgba(0,0,0,.4); }
+:root[data-section="media"] .hero-eyebrow { color: #ddd; letter-spacing: .32em; font-size: 12px; }
+.hero-mark { display: inline-grid; place-items: center; width: 22px; height: 30px; font: 900 30px/1 var(--display); font-stretch: 70%; color: var(--red); letter-spacing: 0; }
+:root[data-section="media"] .hero-meta .score { background: none; border: 0; padding: 0; color: #46d369; font-weight: 700; }
+:root[data-section="media"] .hero-meta .score .star { fill: #46d369; }
+:root[data-section="media"] .hero-strip { bottom: 150px; gap: 6px; }
+:root[data-section="media"] .hero-strip .thumb { width: 22px; height: 3px; aspect-ratio: auto; border-radius: 2px; opacity: 1; background: rgba(255,255,255,.35); }
+:root[data-section="media"] .hero-strip .thumb img { display: none; }
+:root[data-section="media"] .hero-strip .thumb.on { width: 40px; }
+:root[data-section="media"] .hero-strip .thumb i { height: 100%; background: #fff; }
+
+/* ---------- Raf başlıkları ---------- */
+:root[data-section="anime"] .shelf-head h2 { display: flex; align-items: center; gap: 12px; }
+:root[data-section="anime"] .shelf:not(.shelf-rank) .shelf-head h2::before { content: ""; width: 5px; height: 22px; border-radius: 3px; background: var(--grad); flex: none; }
+:root[data-section="media"] .shelf { margin-top: 38px; }
+:root[data-section="media"] .shelf-head { margin-bottom: 12px; }
+:root[data-section="media"] .shelf-head h2, :root[data-section="media"] .genres h2 { font-family: var(--body); font-weight: 700; font-stretch: 100%; font-size: clamp(18px, 1.6vw, 22px); letter-spacing: 0; display: flex; align-items: center; gap: 12px; }
+.more { display: inline-flex; align-items: center; gap: 4px; }
+.more svg { width: 12px; height: 12px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; transition: transform .2s; }
+.more:hover svg { transform: translateX(3px); }
+:root[data-section="media"] .more { color: #54b9c5; font-size: 13px; opacity: 0; transform: translateX(-8px); transition: opacity .25s, transform .25s; }
+:root[data-section="media"] .shelf:hover .more, :root[data-section="media"] .more:focus-visible { opacity: 1; transform: none; }
+@media (hover: none) { :root[data-section="media"] .more { opacity: 1; transform: none; } }
+.top10 { display: inline-grid; place-items: center; width: 34px; height: 38px; border-radius: 4px; background: var(--grad); color: #fff; font: 900 9px/1 var(--display); letter-spacing: .06em; flex: none; }
+.top10 b { display: block; font-size: 18px; font-stretch: 75%; letter-spacing: -.02em; margin-top: 1px; }
+:root[data-section="media"] .top10 { background: var(--red); border-radius: 2px; }
+
+/* ---------- Satırlar ---------- */
+.row { padding: 10px 6px; margin: -10px -6px; }
+.row-land { grid-auto-columns: clamp(200px, 18.6vw, 290px); gap: 10px; }
+.row-rank { grid-auto-columns: clamp(170px, 17vw, 230px); gap: 14px; }
+:root[data-section="media"] .row-poster { grid-auto-columns: clamp(130px, 12.6vw, 176px); gap: 10px; }
+
+/* ---------- Afiş kartı ---------- */
+.card-img { border-radius: var(--radius, 6px); }
+.card-img::after { border-radius: inherit; }
+.card-score { position: absolute; z-index: 3; right: 8px; top: 8px; display: inline-flex; align-items: center; gap: 4px; padding: 3px 7px; border-radius: 999px; background: rgba(10,8,20,.72); backdrop-filter: blur(6px); color: #fff; font-size: 12px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.card-score .star { width: 10px; height: 10px; fill: #ffc94d; }
+.card-hover { position: absolute; z-index: 3; left: 50%; top: 50%; width: 48px; height: 48px; margin: -24px 0 0 -24px; border-radius: 50%; display: grid; place-items: center; background: var(--grad); opacity: 0; transform: scale(.7); transition: opacity .2s, transform .25s cubic-bezier(.3,1.4,.5,1); box-shadow: 0 8px 24px -6px rgba(0,0,0,.6); }
+.card-hover svg { width: 16px; height: 16px; fill: #fff; margin-left: 3px; }
+.card:hover .card-hover, .card:focus-visible .card-hover { opacity: 1; transform: none; }
+.card-meta .kind { color: var(--faint); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
+:root[data-section="anime"] .card:hover .card-img { box-shadow: 0 0 0 2px var(--red), 0 18px 40px -16px color-mix(in srgb, var(--red) 80%, transparent); }
+:root[data-section="media"] .card .card-title, :root[data-section="media"] .card .card-meta { display: none; }
+:root[data-section="media"] .card-hover { background: rgba(255,255,255,.92); }
+:root[data-section="media"] .card-hover svg { fill: #000; }
+:root[data-section="media"] .card:hover { transform: scale(1.05); }
+:root[data-section="media"] .card:hover .card-img { box-shadow: 0 14px 30px -10px rgba(0,0,0,.8); }
+
+/* ---------- Yatay kart (16:9) ---------- */
+.land { display: block; min-width: 0; position: relative; transition: transform .25s ease, opacity .35s ease; }
+.land-img { position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--radius, 6px); background: var(--bg-3); }
+.land-img img { width: 100%; height: 100%; object-fit: cover; position: relative; z-index: 1; }
+.land-img img.is-poster { object-position: center 20%; }
+.land-ph { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; text-align: center; font: 800 20px/1.05 var(--display); font-stretch: 78%; color: var(--faint); background: linear-gradient(135deg, var(--bg-3), var(--bg-2)); }
+.land-shade { position: absolute; inset: 0; z-index: 2; background: linear-gradient(0deg, rgba(0,0,0,.88) 0%, rgba(0,0,0,.35) 38%, transparent 62%); }
+.land-body { position: absolute; z-index: 3; left: 12px; right: 12px; bottom: 10px; display: grid; gap: 3px; color: #fff; }
+.land-title { font: 800 clamp(15px, 1.25vw, 19px)/1.1 var(--display); font-stretch: 82%; letter-spacing: -.005em; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-shadow: 0 1px 8px rgba(0,0,0,.6); }
+.land-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 10px; font-size: 12px; color: #d2d2d2; max-height: 0; opacity: 0; overflow: hidden; transition: max-height .25s, opacity .25s; }
+.land-meta .score { color: #46d369; font-weight: 700; }
+.land-meta .score .star { fill: #46d369; width: 10px; height: 10px; }
+.land-meta .kind { border: 1px solid rgba(255,255,255,.4); border-radius: 3px; padding: 0 5px; font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.land-play { position: absolute; z-index: 3; right: 10px; bottom: 10px; width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: #fff; opacity: 0; transform: scale(.7); transition: opacity .2s, transform .25s; }
+.land-play svg { width: 13px; height: 13px; fill: #000; margin-left: 2px; }
+.land:hover, .land:focus-visible { transform: scale(1.06); z-index: 2; outline: none; }
+.land:hover .land-img, .land:focus-visible .land-img { box-shadow: 0 18px 36px -12px rgba(0,0,0,.85); }
+.land:focus-visible .land-img { box-shadow: 0 0 0 2px var(--ring); }
+.land:hover .land-meta, .land:focus-visible .land-meta { max-height: 40px; opacity: 1; }
+.land:hover .land-play, .land:focus-visible .land-play { opacity: 1; transform: none; }
+.land:hover .land-body, .land:focus-visible .land-body { right: 52px; }
+:root[data-section="anime"] .land-play { background: var(--grad); }
+:root[data-section="anime"] .land-play svg { fill: #fff; }
+:root[data-section="anime"] .land:hover .land-img { box-shadow: 0 0 0 2px var(--red), 0 18px 36px -12px rgba(0,0,0,.85); }
+.land.noimg-fallback .land-shade { display: none; }
+.land-img.noimg .land-shade { background: none; }
+
+/* ---------- İlk 10 kartı ---------- */
+.rank { position: relative; display: block; min-width: 0; padding-left: 40%; transition: transform .25s, opacity .35s; }
+.rank .card-img { margin: 0; aspect-ratio: 2 / 3; position: relative; z-index: 1; }
+.rank-n {
+  position: absolute; left: -4px; bottom: -0.08em; z-index: 0;
+  font: 900 clamp(120px, 12vw, 176px)/.8 var(--display); font-stretch: 62%; letter-spacing: -.06em;
+  color: var(--bg); -webkit-text-stroke: 3px color-mix(in srgb, var(--text) 55%, transparent);
+  user-select: none;
+}
+.rank:nth-child(10) .rank-n { letter-spacing: -.14em; left: -14px; }
+:root[data-section="anime"] .rank-n { color: transparent; -webkit-text-stroke: 0; background: var(--grad); -webkit-background-clip: text; background-clip: text; opacity: .9; }
+.rank:hover { transform: translateY(-4px); }
+.rank:hover .card-img { box-shadow: 0 0 0 2px var(--text); }
+.rank:focus-visible { outline: none; }
+.rank:focus-visible .card-img { box-shadow: 0 0 0 2px var(--ring); }
+.rank, .land { opacity: 0; }
+.rank.visible, .land.visible { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .rank, .land { opacity: 1; } }
+
+/* ---------- Izgaralar ---------- */
+.grid-land { grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 26px 12px; }
+.sk-poster { aspect-ratio: 2 / 3; border-radius: var(--radius, 6px); }
+.sk-land { aspect-ratio: 16 / 9; border-radius: var(--radius, 6px); }
+
+/* ---------- Tür kutucukları ---------- */
+.genres .shelf-head { margin-bottom: 0; }
+.genre-grid a { position: relative; overflow: hidden; display: flex; align-items: flex-end; min-height: 92px; color: #fff; border: 0; }
+.genre-grid a span { position: relative; z-index: 1; }
+:root[data-section="anime"] .genre-grid a { border-radius: 14px; background: linear-gradient(135deg, hsl(var(--h) 80% 58%), hsl(calc(var(--h) + 45) 70% 34%)); font-style: italic; box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+:root[data-section="anime"] .genre-grid a::after { content: ""; position: absolute; right: -18px; top: -18px; width: 86px; height: 86px; border-radius: 50%; border: 12px solid rgba(255,255,255,.14); transition: transform .3s; }
+:root[data-section="anime"] .genre-grid a:hover::after { transform: scale(1.25); }
+:root[data-section="anime"] .genre-grid a:hover { filter: brightness(1.1); background: linear-gradient(135deg, hsl(var(--h) 80% 58%), hsl(calc(var(--h) + 45) 70% 34%)); }
+:root[data-section="media"] .genre-grid { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+:root[data-section="media"] .genre-grid a { border-radius: 4px; min-height: 84px; font-family: var(--body); font-weight: 700; font-stretch: 100%; font-size: 17px; background: linear-gradient(120deg, hsl(var(--h) 55% 26%) 0%, #1a1a1a 85%); box-shadow: inset 0 0 0 1px rgba(255,255,255,.06); transition: transform .2s; }
+:root[data-section="media"] .genre-grid a::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: hsl(var(--h) 75% 55%); }
+:root[data-section="media"] .genre-grid a:hover { transform: scale(1.03); background: linear-gradient(120deg, hsl(var(--h) 60% 32%) 0%, #222 85%); }
+:root[data-section="media"][data-theme="light"] .genre-grid a { background: linear-gradient(120deg, hsl(var(--h) 55% 34%) 0%, #2a2a2a 85%); }
+
+/* ---------- Keşfet sayfası ---------- */
+.eyebrow { display: block; color: var(--faint); font-size: 11px; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; margin-bottom: 8px; }
+:root[data-section="anime"] .page-head .eyebrow { color: transparent; background: var(--grad); -webkit-background-clip: text; background-clip: text; }
+:root[data-section="media"] .page-head .eyebrow { color: var(--red); }
+.page-head { align-items: flex-end; }
+.kind-switch { display: inline-flex; padding: 3px; border-radius: 999px; border: 1px solid var(--line); background: var(--bg-2); margin-right: auto; }
+.kind-switch a { padding: 7px 16px; border-radius: 999px; font-size: 14px; font-weight: 650; color: var(--dim); }
+.kind-switch a:hover { color: var(--text); }
+.kind-switch a.on { background: var(--text); color: var(--bg); }
+:root[data-section="media"] .kind-switch, :root[data-section="media"] .kind-switch a { border-radius: 4px; }
+:root[data-section="media"] .page-browse, :root[data-section="media"] .page-head { padding-top: 0; }
+:root[data-section="media"] main > .page:first-child { padding-top: 32px; }
+:root[data-section="anime"] .chip { border-radius: 999px; }
+:root[data-section="anime"] .chip.on { background: var(--grad); border-color: transparent; color: #fff; box-shadow: none; }
+:root[data-section="media"] .chip { border-radius: 4px; }
+:root[data-section="media"] .chip.on { background: var(--text); color: var(--bg); box-shadow: none; }
+
+/* ---------- İzleme sayfası vurguları ---------- */
+:root[data-section="anime"] .cinema { background: radial-gradient(80% 120% at 50% 0%, #1a1030, #07060c 70%); border-color: #221a38; }
+:root[data-section="anime"] .cinema-panel { background: #0f0c1c; border-color: #241d3d; }
+:root[data-section="anime"] .cinema-ep-list .ep:hover, :root[data-section="anime"] .cinema-ep-list .ep.cur { background: #1d1733; }
+:root[data-section="anime"] .src-bar { background: #0b0915; border-color: #221a38; }
+:root[data-section="anime"] .source-chip.on { background: var(--grad); border-color: transparent; box-shadow: 0 0 0 2px rgba(192,69,232,.3); }
+:root[data-section="anime"] .where { border-radius: 16px; }
+:root[data-section="media"] .title { font-stretch: 80%; font-weight: 900; }
+:root[data-section="media"] .source-chip, :root[data-section="media"] .source-chip.on { border-radius: 4px; }
+
+/* ---------- Duyarlı ---------- */
+@media (max-width: 1180px) {
+  .tab-btn { padding: 0 12px; }
+  .nav { gap: 18px; }
+  .hero-poster { display: none; }
+}
+@media (max-width: 900px) {
+  .hero-native { display: none; }
+  :root[data-section="media"] .hero-body { padding-bottom: 72px; }
+}
+@media (max-width: 760px) {
+  .tab-bar { order: 4; width: 100%; margin: 10px 0 12px; }
+  .tab-btn { height: 36px; }
+  :root[data-section="media"] .hero { margin-top: 0; }
+  :root[data-section="media"] .top { background: color-mix(in srgb, var(--bg) 96%, transparent); }
+  .row-land { grid-auto-columns: 72vw; }
+  .row-rank { grid-auto-columns: 46vw; }
+  .rank-n { font-size: 30vw; }
+  .grid-land { grid-template-columns: repeat(auto-fill, minmax(min(100%, 260px), 1fr)); }
+  .land-meta { max-height: 40px; opacity: 1; }
+  .kind-switch { order: 3; }
+  .nav { top: 118px; }
+  .genre-grid, :root[data-section="media"] .genre-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .genre-grid a { min-height: 64px; padding: 14px; font-size: 17px; white-space: normal; }
 }

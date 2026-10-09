@@ -4,14 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LOVELL</title>
-<meta name="description" content="Anime keşfet, listeni tut, kendi video arşivini tek yerden izle.">
+<meta name="description" content="Anime, film ve dizileri keşfet, listeni tut, tek yerden izle.">
 <meta name="theme-color" content="#12152B">
 <link rel="icon" href="/public/mark.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Onest:wght@400;500;600;700&display=swap">
-<script>try{const t=localStorage.getItem('lovell.theme');if(t)document.documentElement.dataset.theme=t}catch{}</script>
-<link rel="stylesheet" href="/src/style.css?v=6">
+<script>try{const d=document.documentElement,t=localStorage.getItem('lovell.theme');if(t)d.dataset.theme=t;const s=JSON.parse(localStorage.getItem('lovell.tab')||'"anime"');d.dataset.section=s==='media'||s==='movies'?'media':'anime'}catch{document.documentElement.dataset.section='anime'}</script>
+<link rel="stylesheet" href="/src/style.css?v=7">
 </head>
 <body>
 <a class="skip" href="#main">İçeriğe geç</a>
@@ -20,14 +20,15 @@
     <a class="logo" href="#/" aria-label="LOVELL ana sayfa">
       <svg viewBox="0 0 212 56" aria-hidden="true"><g transform="skewX(-9) translate(8 0)"><g fill="currentColor"><path d="M0 6h10v34h16v10H0z"/><path d="M74 6h11l7 30 7-30h11l-12 44H86z"/><path d="M116 6h24v10h-14v7h11v10h-11v7h14v10h-24z"/><path d="M146 6h10v34h16v10h-26z"/><path d="M178 6h10v34h16v10h-26z"/></g><path class="logo-o" fill-rule="evenodd" d="M50 6a18 18 0 0 1 18 18v8a18 18 0 0 1-36 0v-8A18 18 0 0 1 50 6zM45 17v22l14-11z"/></g></svg>
     </a>
-    <div class="tab-bar" role="tablist" aria-label="İçerik türü">
-      <button class="tab-btn active" role="tab" aria-selected="true" data-tab="anime" type="button">🎌 Anime</button>
-      <button class="tab-btn" role="tab" aria-selected="false" data-tab="movies" type="button">🎬 Film &amp; Dizi</button>
+    <div class="tab-bar" role="tablist" aria-label="Bölüm">
+      <span class="tab-glider" aria-hidden="true"></span>
+      <button class="tab-btn active" role="tab" aria-selected="true" data-tab="anime" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5l1.9 4.6 4.9.4-3.7 3.2 1.1 4.8L10 13l-4.2 2.5 1.1-4.8-3.7-3.2 4.9-.4z"/></svg><span>Anime</span></button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="media" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4.5" width="15" height="11" rx="2"/><path d="M8.5 8v4l3.5-2z"/></svg><span>Film &amp; Dizi</span></button>
     </div>
     <nav class="nav" id="main-nav" aria-label="Ana menü">
-      <a href="#/" data-nav="home">Ana sayfa</a>
-      <a href="#/kesfet" data-nav="kesfet">Diziler</a>
-      <a href="#/filmler" data-nav="filmler">Filmler</a>
+      <a href="#/" data-nav="home">Keşfet</a>
+      <a href="#/kesfet" data-nav="kesfet">Seriler</a>
+      <a href="#/filmler" data-nav="filmler">Anime filmleri</a>
       <a href="#/listem" data-nav="listem">Listem<span class="count" id="list-count" hidden></span></a>
       <a href="#/bilgisayarim" data-nav="bilgisayarim">Bilgisayarımda</a>
     </nav>
@@ -51,7 +52,7 @@
 <footer class="foot">
   <div class="foot-inner">
     <p class="foot-brand"><img src="/public/mark.svg" alt="" width="28" height="28"> LOVELL</p>
-    <p>Bilgiler TMDB ve AniList'ten, yayın platformu bilgileri JustWatch'tan gelir. Bu site TMDB API'sini kullanır ancak TMDB tarafından onaylanmış değildir.</p>
+    <p><span id="foot-section"></span> Yayın platformu bilgileri JustWatch'tan gelir. Bu site TMDB API'sini kullanır ancak TMDB tarafından onaylanmış değildir.</p>
     <p class="foot-status" id="data-status"></p>
   </div>
 </footer>
@@ -71,6 +72,6 @@
 </dialog>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="/src/main.js?v=5"></script>
+<script type="module" src="/src/main.js?v=7"></script>
 </body>
 </html>

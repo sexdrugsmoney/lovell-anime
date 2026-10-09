@@ -11,7 +11,9 @@ const store = {
   set(k, v) { try { localStorage.setItem('lovell.' + k, JSON.stringify(v)); } catch {} },
 };
 const keyOf = a => `${a.kind}:${a.id}`;
-const slim = a => ({kind: a.kind, id: a.id, title: a.title, poster: a.poster, backdrop: a.backdrop, year: a.year, score: a.score, isMovie: a.isMovie || a.kind === 'movie'});
+const slim = a => ({kind: a.kind, id: a.id, title: a.title, poster: a.poster, backdrop: a.backdrop, year: a.year, score: a.score, isMovie: a.isMovie || a.kind === 'movie', section: secOf(a)});
+// Eski kayıtlarda bölüm bilgisi yok: o zamanlar site yalnızca anime içeriyordu.
+const secOf = a => a?.section === 'media' ? 'media' : 'anime';
 let myList = store.get('list', []);
 let progress = store.get('progress', {});   // "kind:id:s:e" -> {t, d, at}
 let recent = store.get('recent', {});       // "kind:id" -> {item, s, e, at}
@@ -30,26 +32,52 @@ function toggleList(a) {
 }
 function updateCount() {
   const c = $('#list-count');
-  c.textContent = myList.length;
-  c.hidden = !myList.length;
+  const n = myList.filter(x => secOf(x) === section).length;
+  c.textContent = n;
+  c.hidden = !n;
 }
 
-// ---------------- Tab yönetimi ----------------
-let currentTab = store.get('tab', 'anime'); // 'anime' | 'movies'
+// ---------------- Bölüm yönetimi (Anime | Film & Dizi) ----------------
+// Her bölümün kendi teması, menüsü, rafları ve türleri var.
+const SECTIONS = {
+  anime: {
+    label: 'Anime', search: 'Anime ara', placeholder: 'Anime adı yaz (Türkçe, İngilizce ya da Japonca)',
+    nav: {home: 'Keşfet', kesfet: 'Seriler', filmler: 'Anime filmleri'},
+    tv: 'Anime serileri', movie: 'Anime filmleri', color: '#0d0b16',
+    empty: 'Bir animenin sayfasında “Listeye ekle”ye bastığında burada görünür.',
+  },
+  media: {
+    label: 'Film & Dizi', search: 'Film, dizi ara', placeholder: 'Film ya da dizi adı yaz',
+    nav: {home: 'Ana sayfa', kesfet: 'Diziler', filmler: 'Filmler'},
+    tv: 'Diziler', movie: 'Filmler', color: '#0b0b0b',
+    empty: 'Bir film ya da dizinin sayfasında “Listeme ekle”ye bastığında burada görünür.',
+  },
+};
+let section = (() => { const t = store.get('tab', 'anime'); return t === 'media' || t === 'movies' ? 'media' : 'anime'; })();
+const S = () => SECTIONS[section];
 
-function setTab(tab) {
-  currentTab = tab;
-  store.set('tab', tab);
+function setSection(next) {
+  section = next === 'media' ? 'media' : 'anime';
+  store.set('tab', section);
+  const root = document.documentElement;
+  root.dataset.section = section;
   $$('.tab-btn').forEach(b => {
-    const on = b.dataset.tab === tab;
+    const on = b.dataset.tab === section;
     b.classList.toggle('active', on);
     b.setAttribute('aria-selected', String(on));
   });
+  $('.tab-bar')?.style.setProperty('--i', section === 'media' ? 1 : 0);
+  Object.entries(S().nav).forEach(([k, t]) => { const a = $(`[data-nav="${k}"]`); if (a) a.textContent = t; });
   const sl = $('#search-label');
-  if (sl) sl.textContent = tab === 'anime' ? 'Anime ara' : 'Film / Dizi ara';
+  if (sl) sl.textContent = S().search;
   const si = $('#search-input');
-  if (si) si.placeholder = tab === 'anime' ? 'Anime adı yaz' : 'Film veya dizi adı yaz';
+  if (si) si.placeholder = S().placeholder;
+  $('#search-dialog')?.setAttribute('aria-label', S().search);
+  $('meta[name="theme-color"]')?.setAttribute('content', S().color);
+  $('#foot-section') && ($('#foot-section').textContent = section === 'anime' ? 'Anime bilgileri TMDB ve AniList’ten gelir.' : 'Film ve dizi bilgileri TMDB’den gelir.');
+  updateCount();
 }
+const withSection = path => path + (path.includes('?') ? '&' : '?') + 'section=' + section;
 function saveProgress(a, s, e, t, d) {
   if (!(t > 0) || !(d > 0)) return;
   progress[`${keyOf(a)}:${s}:${e}`] = {t: Math.round(t), d: Math.round(d), at: Date.now()};
@@ -109,19 +137,41 @@ function imgFallback(root = document) {
   $$('img[data-fb]', root).forEach(img => {
     if (img.dataset.bound) return;
     img.dataset.bound = 1;
-    img.addEventListener('error', () => { img.closest('.card-img, .wide-img, .hero-bg, .thumb')?.classList.add('noimg'); img.remove(); }, {once: true});
+    img.addEventListener('error', () => { img.closest('.card-img, .wide-img, .land-img, .hero-bg, .hero-poster, .thumb')?.classList.add('noimg'); img.remove(); }, {once: true});
   });
 }
 
 // ---------------- Bileşenler ----------------
+const kindLabel = a => isMovie(a) ? 'Film' : secOf(a) === 'anime' ? 'Seri' : 'Dizi';
+// Dikey afiş kartı (anime bölümünün varsayılanı)
 function card(a) {
   const local = library.has(keyOf(a));
   return `<a class="card" href="${watchHref(a)}">
-    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${local ? '<span class="flag" title="Bilgisayarında video dosyası var">Dosyan var</span>' : ''}</span>
+    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${local ? '<span class="flag" title="Bilgisayarında video dosyası var">Dosyan var</span>' : ''}${a.score ? `<span class="card-score">${STAR}${score(a.score)}</span>` : ''}<span class="card-hover">${PLAY}</span></span>
     <span class="card-title">${esc(a.title)}</span>
-    <span class="card-meta"><span>${esc(a.year || '')}${isMovie(a) ? ' film' : ''}</span>${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}</span>
+    <span class="card-meta"><span>${esc(a.year || '')}</span><span class="kind">${kindLabel(a)}</span></span>
   </a>`;
 }
+// Yatay 16:9 kart (Film & Dizi bölümünün varsayılanı) — başlık görselin üstünde
+function landCard(a) {
+  const img = a.backdrop || a.poster;
+  return `<a class="land" href="${watchHref(a)}">
+    <span class="land-img">${img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async" data-fb class="${a.backdrop ? '' : 'is-poster'}">` : ''}<span class="land-ph">${esc(a.title)}</span>
+      <span class="land-shade"></span>
+      <span class="land-body"><span class="land-title">${esc(a.title)}</span>
+        <span class="land-meta">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}<span>${esc(a.year || '')}</span><span class="kind">${kindLabel(a)}</span></span></span>
+      <span class="land-play">${PLAY}</span>
+    </span>
+  </a>`;
+}
+// İlk 10 kartı: büyük numara + afiş
+function rankCard(a, i) {
+  return `<a class="rank" href="${watchHref(a)}" aria-label="${i + 1}. ${esc(a.title)}">
+    <span class="rank-n" aria-hidden="true">${i + 1}</span>
+    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span></span>
+  </a>`;
+}
+const gridCard = a => section === 'media' ? landCard(a) : card(a);
 function wideCard(r) {
   const a = r.item, p = progress[`${keyOf(a)}:${r.s}:${r.e}`];
   const pct = p ? Math.min(100, p.t / p.d * 100) : 0;
@@ -132,11 +182,13 @@ function wideCard(r) {
     <span class="card-meta">${isMovie(a) ? 'Film' : `${r.s}. sezon, ${r.e}. bölüm`}${p ? ` <span>${fmtTime(p.d - p.t)} kaldı</span>` : ''}</span>
   </a>`;
 }
-function shelf({title, items, more, wide}) {
+function shelf({title, items, more, wide, layout}) {
   if (!items?.length) return '';
-  return `<section class="shelf">
-    <div class="shelf-head"><h2>${esc(title)}</h2><div class="shelf-tools">${more ? `<a class="more" href="${more}">Tümünü gör</a>` : ''}<button class="arrow" data-dir="-1" aria-label="Geri kaydır"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button><button class="arrow" data-dir="1" aria-label="İleri kaydır"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5"/></svg></button></div></div>
-    <div class="row ${wide ? 'row-wide' : ''}">${items.map(wide ? wideCard : card).join('')}</div>
+  layout = wide ? 'wide' : layout || (section === 'media' ? 'land' : 'poster');
+  const render = {wide: wideCard, land: landCard, rank: rankCard, poster: card}[layout] || card;
+  return `<section class="shelf shelf-${layout}">
+    <div class="shelf-head"><h2>${layout === 'rank' ? '<span class="top10" aria-hidden="true">TOP<b>10</b></span>' : ''}${esc(title)}</h2><div class="shelf-tools">${more ? `<a class="more" href="${more}">Tümünü gör<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></a>` : ''}<button class="arrow" data-dir="-1" aria-label="Geri kaydır"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button><button class="arrow" data-dir="1" aria-label="İleri kaydır"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5"/></svg></button></div></div>
+    <div class="row row-${layout}">${items.map(render).join('')}</div>
   </section>`;
 }
 function bindShelves(root = main) {
@@ -172,7 +224,7 @@ function observeCards(root = document) {
     entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } });
   }, {threshold: 0.08});
   _cardIo = io;
-  $$('.card, .wide', root).forEach(c => io.observe(c));
+  $$('.card, .wide, .land, .rank', root).forEach(c => io.observe(c));
 }
 
 // ---------------- Ana sayfa ----------------
@@ -182,6 +234,7 @@ function heroView(items) {
   return `<section class="hero" aria-roledescription="carousel" aria-label="Öne çıkanlar">
     <div class="hero-bg"></div>
     <div class="hero-shade"></div>
+    ${section === 'anime' ? '<p class="hero-native" lang="ja" aria-hidden="true" hidden></p><div class="hero-poster" aria-hidden="true"></div>' : ''}
     <div class="hero-body"></div>
     <div class="hero-strip" role="tablist">${items.map((a, i) => `<button role="tab" class="thumb" data-i="${i}" aria-label="${esc(a.title)}">${a.backdrop ? `<img src="${esc(a.backdrop)}" alt="" data-fb>` : ''}<i></i></button>`).join('')}</div>
   </section>`;
@@ -194,11 +247,18 @@ function bindHero(items) {
     i = (n + items.length) % items.length;
     const a = items[i];
     $('.hero-bg', hero).innerHTML = a.backdrop ? `<img src="${esc(a.backdrop)}" alt="" loading="eager" fetchpriority="high" data-fb>` : '';
+    const anime = section === 'anime';
+    const native = anime && a.original && a.original !== a.title && !/[a-z]/i.test(a.original) ? a.original : '';
     $('.hero-body', hero).innerHTML = `
+      <p class="hero-eyebrow">${anime ? `<span class="pill">Bu sezon</span>${String(i + 1).padStart(2, '0')} / ${String(items.length).padStart(2, '0')}` : `<span class="hero-mark">L</span>${kindLabel(a).toLocaleUpperCase('tr')}`}</p>
       <h1 class="hero-title">${esc(a.title)}</h1>
-      <p class="hero-meta">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}<span>${esc(a.year)}</span>${a.genres?.length ? `<span>${esc(a.genres.slice(0, 3).join(', '))}</span>` : ''}</p>
+      <p class="hero-meta">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}<span>${esc(a.year)}</span>${anime ? '' : `<span>${kindLabel(a)}</span>`}${a.genres?.length ? `<span>${esc(a.genres.slice(0, 3).join(' · '))}</span>` : ''}</p>
       <p class="hero-text">${esc(a.overview)}</p>
-      <div class="actions"><a class="btn btn-play" href="${watchHref(a)}">${PLAY}İzle</a><button class="btn btn-ghost" data-save>${inList(a) ? CHECK + 'Listende' : PLUS + 'Listeye ekle'}</button></div>`;
+      <div class="actions"><a class="btn btn-play" href="${watchHref(a)}">${PLAY}${anime ? 'İzlemeye başla' : 'Oynat'}</a><button class="btn btn-ghost" data-save>${inList(a) ? CHECK + 'Listende' : PLUS + (anime ? 'Listeye ekle' : 'Listem')}</button></div>`;
+    const jp = $('.hero-native', hero);
+    if (jp) { jp.textContent = native; jp.hidden = !native; }
+    const pc = $('.hero-poster', hero);
+    if (pc) pc.innerHTML = anime && a.poster ? `<img src="${esc(a.posterLarge || a.poster)}" alt="" data-fb>` : '';
     $('[data-save]', hero).onclick = e => { const on = toggleList(a); e.currentTarget.innerHTML = on ? CHECK + 'Listende' : PLUS + 'Listeye ekle'; };
     $$('.thumb', hero).forEach((t, k) => { t.setAttribute('aria-selected', k === i); t.classList.toggle('on', k === i); });
     imgFallback(hero);
@@ -212,28 +272,24 @@ function bindHero(items) {
 async function viewHome(v) {
   main.innerHTML = loading('Ana sayfa hazırlanıyor');
   let data;
-  try { data = await api('/api/home'); } catch (e) { if (v === routeId) main.innerHTML = errorBox(e); return; }
+  main.innerHTML = homeSkeleton();
+  try { data = await api(withSection('/api/home')); } catch (e) { if (v === routeId) main.innerHTML = errorBox(e); return; }
   if (v !== routeId) return;
 
-  // Tab'a göre içerik filtrele
-  const isAnimeTab = currentTab === 'anime';
-  const filterItem = a => isAnimeTab ? (a.kind === 'al' || a.genre === 'anime' || a.kind === 'tv') : (a.kind === 'movie' || a.kind === 'tv');
-  // anime tab → tüm içerik (mevcut davranış), movies tab → sadece film/dizi
-  const hero = isAnimeTab ? data.hero : (data.hero.filter(a => a.kind !== 'al').length ? data.hero.filter(a => a.kind !== 'al') : data.hero.slice(0, 5));
-  const shelves = isAnimeTab ? data.shelves : data.shelves.map(s => ({...s, items: s.items.filter(a => a.kind !== 'al')})).filter(s => s.items?.length);
-
-  const recents = Object.values(recent).sort((a, b) => b.at - a.at)
-    .filter(r => isAnimeTab ? true : r.item?.kind !== 'al')
-    .slice(0, 10);
-  const listed = myList.filter(a => isAnimeTab ? true : a.kind !== 'al').slice(0, 18);
+  // Her bölüm yalnızca kendi içeriğini gösterir.
+  const hero = data.hero || [];
+  const shelves = data.shelves || [];
+  const recents = Object.values(recent).filter(r => secOf(r.item) === section).sort((a, b) => b.at - a.at).slice(0, 10);
+  const listed = myList.filter(a => secOf(a) === section).slice(0, 18);
 
   main.innerHTML = `${heroView(hero)}
-    <div class="page tab-content-enter">
-      ${shelf({title: 'Kaldığın yerden', items: recents, wide: true})}
-      ${shelves.slice(0, 1).map(shelf).join('')}
-      ${shelf({title: 'Listendekiler', items: listed, more: '#/listem'})}
-      ${shelves.slice(1).map(shelf).join('')}
+    <div class="page page-home tab-content-enter">
+      ${shelf({title: section === 'anime' ? 'Kaldığın bölümden devam et' : 'İzlemeye devam et', items: recents, wide: true})}
+      ${shelves.slice(0, 2).map(shelf).join('')}
+      ${shelf({title: 'Listem', items: listed, more: '#/listem', layout: section === 'media' ? 'land' : 'poster'})}
+      ${shelves.slice(2, 5).map(shelf).join('')}
       ${genreLinks()}
+      ${shelves.slice(5).map(shelf).join('')}
     </div>`;
   bindHero(hero);
   bindShelves();
@@ -242,9 +298,19 @@ async function viewHome(v) {
   setStatus(data.source);
 }
 let genres = [];
+// Tür kutucukları: her türün kendi renk tonu var (bölüm temasıyla karışır).
+const GENRE_HUE = {aksiyon: 4, macera: 28, komedi: 48, dram: 330, fantastik: 270, 'bilim-kurgu': 200, gizem: 250, romantik: 340, korku: 0, spor: 140, 'gunluk-yasam': 95, dogaustu: 290, suc: 15, gerilim: 355, animasyon: 175, belgesel: 120, aile: 60, savas: 30, tarih: 38, western: 24};
 function genreLinks() {
   if (!genres.length) return '';
-  return `<section class="genres"><h2>Türe göre</h2><div class="genre-grid">${genres.map(g => `<a href="#/kesfet?tur=${g.slug}">${esc(g.name)}</a>`).join('')}</div></section>`;
+  const target = g => section === 'media' && !g.tv ? '#/filmler' : '#/kesfet';
+  return `<section class="genres"><div class="shelf-head"><h2>${section === 'anime' ? 'Türlere göz at' : 'Kategoriler'}</h2></div><div class="genre-grid">${genres.map((g, i) => `<a href="${target(g)}?tur=${g.slug}" style="--h:${GENRE_HUE[g.slug] ?? i * 37}"><span>${esc(g.name)}</span></a>`).join('')}</div></section>`;
+}
+function homeSkeleton() {
+  const row = n => `<div class="shelf"><span class="skeleton" style="height:22px;width:220px;margin-bottom:16px"></span><div class="row row-${section === 'media' ? 'land' : 'poster'}">${Array.from({length: n}, () => `<span class="skeleton sk-${section === 'media' ? 'land' : 'poster'}"></span>`).join('')}</div></div>`;
+  return `<div class="hero hero-skeleton"><div class="hero-shade"></div></div><div class="page page-home" role="status" aria-label="Yükleniyor">${row(8)}${row(8)}</div>`;
+}
+async function loadGenres() {
+  try { genres = await api(withSection('/api/genres')); } catch { genres = []; }
 }
 
 // ---------------- Keşfet / Filmler ----------------
@@ -253,16 +319,27 @@ async function viewBrowse(v, kind, params) {
   const genre = params.get('tur') || '', sort = params.get('sirala') || 'popular', q = params.get('ara') || '';
   const base = kind === 'movie' ? '#/filmler' : '#/kesfet';
   const link = o => { const p = new URLSearchParams({tur: genre, sirala: sort, ara: q, ...o}); [...p.keys()].forEach(k => !p.get(k) && p.delete(k)); return base + (p.toString() ? '?' + p : ''); };
-  main.innerHTML = `<div class="page">
-    <header class="page-head"><h1>${kind === 'movie' ? (currentTab === 'movies' ? 'Filmler' : 'Anime filmleri') : (currentTab === 'movies' ? 'Diziler' : 'Anime dizileri')}</h1>
-      <form class="filter-search" role="search"><input name="ara" type="search" value="${esc(q)}" placeholder="${kind === 'movie' ? 'Filmlerde ara' : 'Dizilerde ara'}" aria-label="Ara"></form></header>
+  const media = section === 'media';
+  const kindGenres = genres.filter(g => g[kind] !== false);
+  const sorts = media ? [['popular', 'Popüler'], ['season', kind === 'movie' ? 'Vizyondan yeni' : 'Yeni sezonlar'], ['rating', 'En yüksek puan'], ['new', 'En yeni']] : SORTS;
+  const other = kind === 'movie' ? '#/kesfet' : '#/filmler';
+  const gName = genres.find(g => g.slug === genre)?.name;
+  main.innerHTML = `<div class="page page-browse tab-content-enter">
+    <header class="page-head">
+      <div><p class="eyebrow">${esc(S().label)}</p><h1>${esc(gName ? `${gName} ${kind === 'movie' ? (media ? 'filmleri' : 'anime filmleri') : (media ? 'dizileri' : 'animeleri')}` : S()[kind])}</h1></div>
+      <div class="kind-switch" role="tablist" aria-label="Tür">
+        <a role="tab" href="${kind === 'tv' ? '#' : other}" aria-selected="${kind === 'tv'}" class="${kind === 'tv' ? 'on' : ''}" ${kind === 'tv' ? 'data-noop' : ''}>${media ? 'Diziler' : 'Seriler'}</a>
+        <a role="tab" href="${kind === 'movie' ? '#' : other}" aria-selected="${kind === 'movie'}" class="${kind === 'movie' ? 'on' : ''}" ${kind === 'movie' ? 'data-noop' : ''}>Filmler</a>
+      </div>
+      <form class="filter-search" role="search"><input name="ara" type="search" value="${esc(q)}" placeholder="${esc(S()[kind])} içinde ara" aria-label="Ara"></form></header>
     <div class="filters">
-      <div class="chips" role="list"><a role="listitem" class="chip ${!genre ? 'on' : ''}" href="${link({tur: ''})}">Hepsi</a>${genres.map(g => `<a role="listitem" class="chip ${genre === g.slug ? 'on' : ''}" href="${link({tur: g.slug})}">${esc(g.name)}</a>`).join('')}</div>
-      <label class="select">Sırala <select id="sort">${SORTS.map(([k, t]) => `<option value="${k}" ${k === sort ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
+      <div class="chips" role="list"><a role="listitem" class="chip ${!genre ? 'on' : ''}" href="${link({tur: ''})}">Hepsi</a>${kindGenres.map(g => `<a role="listitem" class="chip ${genre === g.slug ? 'on' : ''}" href="${link({tur: g.slug})}">${esc(g.name)}</a>`).join('')}</div>
+      <label class="select">Sırala <select id="sort">${sorts.map(([k, t]) => `<option value="${k}" ${k === sort ? 'selected' : ''}>${t}</option>`).join('')}</select></label>
     </div>
-    <div class="grid" id="grid"></div>
+    <div class="grid ${media ? 'grid-land' : ''}" id="grid"></div>
     <div class="more-wrap" id="more-wrap">${loading()}</div>
   </div>`;
+  $$('[data-noop]').forEach(a => a.onclick = e => e.preventDefault());
   $('#sort').onchange = e => location.hash = link({sirala: e.target.value});
   $('.filter-search').onsubmit = e => { e.preventDefault(); location.hash = link({ara: e.target.ara.value.trim()}); };
   let page = 1;
@@ -273,16 +350,16 @@ async function viewBrowse(v, kind, params) {
     if (_scrollIo) { _scrollIo.disconnect(); _scrollIo = null; }
     loadingMore = true;
     if (page === 1) {
-      $('#grid').innerHTML = skeletonGrid();
+      $('#grid').innerHTML = media ? Array.from({length: 12}, () => '<span class="skeleton sk-land"></span>').join('') : skeletonGrid().replace(/^<div class="grid">|<\/div>$/g, '');
       $('#more-wrap').innerHTML = '';
     } else {
       $('#more-wrap').innerHTML = loading();
     }
     try {
-      const d = await api(`/api/browse?${new URLSearchParams({kind, genre, sort, page, q})}`);
+      const d = await api(`/api/browse?${new URLSearchParams({kind, genre, sort, page, q, section})}`);
       if (v !== routeId) return;
       if (page === 1) $('#grid').innerHTML = '';
-      $('#grid').insertAdjacentHTML('beforeend', d.items.map(card).join(''));
+      $('#grid').insertAdjacentHTML('beforeend', d.items.map(gridCard).join(''));
       imgFallback($('#grid'));
       observeCards($('#grid'));
       setStatus(d.source);
@@ -314,10 +391,14 @@ async function viewBrowse(v, kind, params) {
 
 // ---------------- Listem ----------------
 function viewList() {
-  main.innerHTML = `<div class="page"><header class="page-head"><h1>Listem</h1>${myList.length ? `<p>${myList.length} başlık. Liste bu tarayıcıda saklanır.</p>` : ''}</header>
-    ${myList.length ? `<div class="grid">${myList.map(card).join('')}</div>` : `<div class="state"><h2>Listen boş</h2><p>Bir animenin sayfasında “Listeye ekle”ye bastığında burada görünür.</p><a class="btn" href="#/kesfet">Dizilere göz at</a></div>`}
+  const mine = myList.filter(a => secOf(a) === section);
+  const others = myList.length - mine.length;
+  const otherName = SECTIONS[section === 'anime' ? 'media' : 'anime'].label;
+  main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${esc(S().label)}</p><h1>Listem</h1></div>${mine.length ? `<p>${mine.length} başlık. Liste bu tarayıcıda saklanır.${others ? ` ${otherName} listende ${others} başlık daha var.` : ''}</p>` : ''}</header>
+    ${mine.length ? `<div class="grid ${section === 'media' ? 'grid-land' : ''}">${mine.map(gridCard).join('')}</div>` : `<div class="state"><h2>Listen boş</h2><p>${S().empty}${others ? ` ${otherName} listende ${others} başlık var.` : ''}</p><a class="btn" href="#/kesfet">${section === 'anime' ? 'Serilere göz at' : 'Dizilere göz at'}</a></div>`}
   </div>`;
   imgFallback();
+  observeCards();
 }
 
 // ---------------- Bilgisayarımda ----------------
@@ -357,10 +438,12 @@ async function refreshLibrary(rescan) {
 // ---------------- İzleme sayfası ----------------
 let player = null;
 async function viewWatch(v, kind, id, params) {
-  main.innerHTML = loading('Anime bilgileri yükleniyor');
+  main.innerHTML = loading(section === 'anime' ? 'Anime bilgileri yükleniyor' : 'Bilgiler yükleniyor');
   let a;
   try { a = await api(`/api/title/${kind}/${id}`); } catch (e) { if (v === routeId) main.innerHTML = errorBox(e); return; }
   if (v !== routeId) return;
+  // Başlık hangi bölüme aitse o bölümün temasına geç (ör. listeden açılan bir film).
+  if (a.section && secOf(a) !== section) { setSection(secOf(a)); loadGenres(); }
   document.title = `${a.title} | LOVELL`;
   const movie = isMovie(a);
   const last = recent[keyOf(a)];
@@ -387,7 +470,7 @@ async function viewWatch(v, kind, id, params) {
         <div class="info">
           <p class="now" id="now"></p>
           <h1 class="title">${esc(a.title)}</h1>
-          ${a.original && a.original !== a.title ? `<p class="original" lang="ja">${esc(a.original)}</p>` : ''}
+          ${a.original && a.original !== a.title ? `<p class="original" ${section === 'anime' ? 'lang="ja"' : ''}>${esc(a.original)}</p>` : ''}
           <p class="facts">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}${movie ? `<span>Film${a.runtime ? `, ${a.runtime} dk` : ''}</span>` : a.episodeCount ? `<span>${a.episodeCount} bölüm</span>` : ''}${a.genres?.length ? `<span>${esc(a.genres.join(', '))}</span>` : ''}${a.studios?.length ? `<span>${esc(a.studios.join(', '))}</span>` : ''}</p>
           ${a.overview ? `<div class="overview" id="overview"><p>${esc(a.overview).replace(/\n+/g, '</p><p>')}</p></div>${a.overviewLang === 'en' ? '<p class="note">Türkçe özet bulunamadı, İngilizcesi gösteriliyor.</p>' : ''}` : ''}
           <div class="actions">
@@ -397,7 +480,7 @@ async function viewWatch(v, kind, id, params) {
         </div>
         ${whereToWatch(a)}
       </div>
-      ${shelf({title: 'Bunu sevenler bunlara da baktı', items: a.recommendations || []})}
+      ${shelf({title: section === 'anime' ? 'Bunu sevenler bunlara da baktı' : 'Benzer içerikler', items: a.recommendations || []})}
     </div>
   </div>`;
   const ov = $('#overview');
@@ -756,12 +839,12 @@ si.addEventListener('input', () => {
   if (q.length < 2) { sr.innerHTML = '<p class="muted pad">En az iki harf yaz.</p>'; return; }
   sr.innerHTML = loading('Aranıyor');
   searchTimer = setTimeout(async () => {    try {
-      const d = await api(`/api/search?q=${encodeURIComponent(q)}`);
+      const d = await api(withSection(`/api/search?q=${encodeURIComponent(q)}`));
       if (seq !== searchSeq) return;
       sr.innerHTML = d.items.length ? d.items.slice(0, 14).map((a, i) => `<a class="result" role="option" href="${watchHref(a)}" data-i="${i}">
           <span class="result-img thumb">${a.poster ? `<img src="${esc(a.poster)}" alt="" data-fb>` : ''}</span>
-          <span><strong>${esc(a.title)}</strong><small>${[a.year, isMovie(a) ? 'Film' : 'Dizi', a.score ? score(a.score) + ' puan' : ''].filter(Boolean).join(', ')}</small></span></a>`).join('')
-        : `<p class="muted pad">“${esc(q)}” için sonuç yok. Japonca ya da İngilizce adını dene.</p>`;
+          <span><strong>${esc(a.title)}</strong><small>${[a.year, kindLabel(a), a.score ? score(a.score) + ' puan' : ''].filter(Boolean).join(', ')}</small></span></a>`).join('')
+        : `<p class="muted pad">“${esc(q)}” için ${esc(S().label)} bölümünde sonuç yok. ${section === 'anime' ? 'Japonca ya da İngilizce adını dene, ya da Film & Dizi bölümünde ara.' : 'Orijinal adını dene; anime arıyorsan Anime bölümüne geç.'}</p>`;
       imgFallback(sr);
     } catch (e) { if (seq === searchSeq) sr.innerHTML = `<p class="muted pad">Arama yapılamadı: ${esc(e.message)}</p>`; }
   }, 300);
@@ -880,20 +963,26 @@ if (/^#watch\?/.test(location.hash)) { const p = new URLSearchParams(location.ha
 window.addEventListener('hashchange', route);
 window.addEventListener('pagehide', destroyPlayer);
 updateCount();
-// Tab butonlarını bağla
-$$('.tab-btn').forEach(b => b.addEventListener('click', () => {
-  if (b.dataset.tab !== currentTab) {
-    setTab(b.dataset.tab);
-    // Ana sayfadaysa içeriği yenile
-    const [path] = location.hash.replace(/^#\/?/, '').split('?');
-    const section = path.split('/').filter(Boolean)[0] || 'home';
-    if (section === 'home') route();
-  }
+// Bölüm değiştirici: tema, menü, türler ve içerik birlikte değişir.
+$$('.tab-btn').forEach(b => b.addEventListener('click', async () => {
+  if (b.dataset.tab === section) return;
+  setSection(b.dataset.tab);
+  if ($('#search-dialog').open) { si.dispatchEvent(new Event('input')); }
+  await loadGenres();
+  const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
+  const part = path.split('/').filter(Boolean)[0] || 'home';
+  // İzleme sayfasından ya da bölüme özgü bir filtreden ayrılıp yeni bölümün ana sayfasına git.
+  if (part === 'izle' || (query && /tur=/.test(query))) location.hash = part === 'izle' ? '#/' : `#/${part}`;
+  else route();
 }));
-// Sayfa yüklenince tab butonlarını senkronize et
-setTab(currentTab);
+setSection(section);
+// Film & Dizi bölümünde üst çubuk vitrinin üstünde şeffaf durur, kaydırınca koyulaşır.
+const topBar = $('.top');
+const onScroll = () => topBar.classList.toggle('scrolled', scrollY > 24);
+addEventListener('scroll', onScroll, {passive: true});
+onScroll();
 Promise.all([
-  api('/api/genres').then(g => genres = g).catch(() => {}),
+  loadGenres(),
   api('/api/status').then(s => { CLOUD = s.mode === 'cloud'; document.documentElement.dataset.mode = CLOUD ? 'cloud' : 'local'; }).catch(() => {}),
   refreshLibrary(false),
 ]).finally(route);
