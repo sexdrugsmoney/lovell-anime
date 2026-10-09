@@ -452,11 +452,9 @@ function nextOf(ctx) {
 async function loadSources(ctx) {
   let d;
   const alId = ctx.a.anilistId || '';
-  $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar aranıyor…<br><small style="color:#888;font-size:13px">(İlk açılışta 50 saniyeye kadar sürebilir)</small></div>`;
+  $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar aranıyor…</div>`;
   try {
-    // CinePro sunucu tarafında 55 saniyelik timeout kullanıyor;
-    // istemci tarafının bunu kesmemesi için 65000ms veriyoruz.
-    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`, 65000);
+    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`, 15000);
   } catch {
     d = {sources: [], embeds: [], folder: `${ctx.a.kind}-${ctx.a.id}`};
   }

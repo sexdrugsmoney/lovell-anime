@@ -196,7 +196,7 @@ async function api(url, env) {
   setup(env);
   const q = url.searchParams;
   const path = url.pathname;
-  if (path === '/api/status') return json({mode: 'cloud', tmdb: authProblem ? 'anahtar geçersiz' : lastOk ? 'bağlı' : 'henüz denenmedi', authProblem, lastSuccess: lastOk, auth: env.TMDB_READ_TOKEN ? 'okuma jetonu (v4)' : env.TMDB_API_KEY ? 'API anahtarı' : 'yok', dataErrors, library: 0, cinepro: env.CINEPRO_URL ? 'yapılandırıldı' : 'yok'});
+  if (path === '/api/status') return json({mode: 'cloud', tmdb: authProblem ? 'anahtar geçersiz' : lastOk ? 'bağlı' : 'henüz denenmedi', authProblem, lastSuccess: lastOk, auth: env.TMDB_READ_TOKEN ? 'okuma jetonu (v4)' : env.TMDB_API_KEY ? 'API anahtarı' : 'yok', dataErrors, library: 0});
   if (path === '/api/genres') return json(GENRES.map(({slug, name}) => ({slug, name})), 200, 86400);
   if (path === '/api/home') return json(await home(), 200, 300);
   if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || ''}), 200, 300);
@@ -216,35 +216,6 @@ async function api(url, env) {
     // KV / MEDIA_SOURCES_JSON / MEDIA_SOURCE_API'den yerel kaynaklar
     const sources = await cloudSources(env, mediaKey(kind, id, season, episode));
 
-    // CinePro Core'dan kaynaklar (CINEPRO_URL secret ayarlanmışsa)
-    let cineproSources = [];
-    if (env.CINEPRO_URL && kind !== 'al') {
-      try {
-        const params = new URLSearchParams({tmdbId: id, type: kind === 'movie' ? 'movie' : 'tv'});
-        if (kind !== 'movie') { params.set('season', String(season)); params.set('episode', String(episode)); }
-        const r = await fetch(`${env.CINEPRO_URL}/scrape?${params}`, {
-          signal: AbortSignal.timeout(55000),
-          headers: {Accept: 'application/json'},
-          cf: {cacheTtl: 3600, cacheEverything: false},
-        });
-        if (r.ok) {
-          const data = await r.json().catch(() => ({}));
-          const raw = data.sources || data.results || data.streams || [];
-          cineproSources = raw.filter(s => {
-            try { const u = new URL(s?.url); return u.protocol === 'https:' && !u.username && !u.password; } catch { return false; }
-          }).map(s => ({
-            name: `CinePro · ${s.quality || s.server || s.provider || 'Auto'}`,
-            origin: 'cinepro',
-            url: s.url,
-            type: s.isM3U8 || /\.m3u8(?:$|[?#])/i.test(s.url) ? 'hls' : s.isDASH || /\.mpd(?:$|[?#])/i.test(s.url) ? 'dash' : 'mp4',
-            subtitles: (s.subtitles || s.tracks || [])
-              .filter(t => { try { const u = new URL(t?.url || t?.file); return u.protocol === 'https:'; } catch { return false; } })
-              .map(t => ({label: String(t.label || t.lang || 'Altyazı').slice(0,60), lang: String(t.lang || t.language || 'tr').slice(0,12), url: t.url || t.file})),
-          }));
-        }
-      } catch { /* CinePro timeout veya hata — embed'lerle devam et */ }
-    }
-
     // Embed sağlayıcıları — iframe tabanlı, kurulum gerektirmez
     const brandColor = (env.VIDRIFT_COLOR || 'e4202b').replace('#', '');
     const brand = (env.VIDRIFT_BRAND || 'LOVELL').slice(0, 28);
@@ -252,7 +223,7 @@ async function api(url, env) {
     const embeds = buildEmbeds(kind, id, alId, season, episode, {brand, brandColor, brandLogo});
     const vidrift = embeds.find(e => e.id === 'vidrift')?.url || null;
 
-    return json({sources: [...sources, ...cineproSources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
+    return json({sources: [...sources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
   }
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);
