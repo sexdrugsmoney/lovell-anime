@@ -799,3 +799,17 @@ body { transition: background-color .3s ease, color .3s ease; }
   .genre-grid, :root[data-section="media"] .genre-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .genre-grid a { min-height: 64px; padding: 14px; font-size: 17px; white-space: normal; }
 }
+
+/* OMDb & Puan rozetleri */
+.imdb-score { display: inline-flex; align-items: center; gap: 4px; }
+.metascore {
+  display: inline-block;
+  background: #6ac045;
+  color: #fff;
+  font-weight: 700;
+  font-size: 12px;
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.metascore[data-score] { }
+.awards-badge { font-size: 16px; cursor: help; }

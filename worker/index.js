@@ -115,6 +115,22 @@ function buildEmbeds(kind, id, alId, season, episode, opts = {}) {
     add('aniembed', 'AniEmbed', `https://aniembed.se/e/${alId}/${episode}`);
   }
 
+  // YapGrid — reklamsız, altyazı çevirisi destekli
+  if (kind !== 'al') {
+    const ygBase = kind === 'movie'
+      ? `https://yapgrid.com/embed/movie/${id}`
+      : `https://yapgrid.com/embed/tv/${id}/${season}/${episode}`;
+    add('yapgrid', 'YapGrid', `${ygBase}?autoplay=1`);
+  }
+
+  // StreamFlizo — film/dizi/anime, TMDB ID
+  if (kind !== 'al') {
+    const sfBase = kind === 'movie'
+      ? `https://streamflizoapi.top/stream/tmdb/${id}/multi`
+      : `https://streamflizoapi.top/stream/tmdb/${id}/${season}/${episode}/multi`;
+    add('streamflizo', 'StreamFlizo', sfBase);
+  }
+
   return list;
 }
 let configured = false;
@@ -253,7 +269,33 @@ async function api(url, env) {
   if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 200, 300);
   if (path === '/api/search') return json(await search(q.get('q'), q.get('section')), 200, 300);
   let m = path.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
-  if (m) return json(await detail(m[1], m[2]), 200, 600);
+  if (m) {
+    const titleData = await detail(m[1], m[2]);
+
+    // OMDb ile zenginleştir (sadece film/dizi, anime değil)
+    if (m[1] !== 'al' && env.OMDB_API_KEY) {
+      try {
+        const omdbUrl = `https://www.omdbapi.com/?i=${titleData.imdbId || ''}&tmdbId=${m[2]}&type=${m[1] === 'movie' ? 'movie' : 'series'}&apikey=${env.OMDB_API_KEY}&plot=short`;
+        const omdbRes = await fetch(omdbUrl, {signal: AbortSignal.timeout(4000), cf: {cacheTtl: 3600, cacheEverything: true}});
+        if (omdbRes.ok) {
+          const omdb = await omdbRes.json().catch(() => ({}));
+          if (omdb.Response === 'True') {
+            titleData.ratings = titleData.ratings || [];
+            if (omdb.imdbRating && omdb.imdbRating !== 'N/A') titleData.imdbRating = omdb.imdbRating;
+            if (omdb.Metascore && omdb.Metascore !== 'N/A') titleData.metascore = omdb.Metascore;
+            if (omdb.Ratings) {
+              const rt = omdb.Ratings.find(r => r.Source === 'Rotten Tomatoes');
+              if (rt) titleData.rottenTomatoes = rt.Value;
+            }
+            if (omdb.Awards && omdb.Awards !== 'N/A') titleData.awards = omdb.Awards;
+            if (omdb.BoxOffice && omdb.BoxOffice !== 'N/A') titleData.boxOffice = omdb.BoxOffice;
+          }
+        }
+      } catch { /* OMDb timeout — orijinal data ile devam */ }
+    }
+
+    return json(titleData, 200, 600);
+  }
   m = path.match(/^\/api\/episodes\/(tv|movie|al)\/(\d{1,9})$/);
   if (m) return json(await episodes(m[1], m[2], int(q.get('season'))), 200, 600);
   m = path.match(/^\/api\/play\/(tv|movie|al)\/(\d{1,9})$/);
@@ -274,7 +316,32 @@ async function api(url, env) {
     const embeds = buildEmbeds(kind, id, alId, season, episode, {brand, brandColor, brandLogo});
     const vidrift = embeds.find(e => e.id === 'vidrift')?.url || null;
 
-    return json({sources: [...sources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
+    // VidRock Resolver — VIDROCK_RESOLVER_URL varsa HLS kaynağını çek
+    let vidRockSources = [];
+    if (env.VIDROCK_RESOLVER_URL && kind !== 'al') {
+      try {
+        const vrParams = new URLSearchParams({type: kind, id, season: String(season), episode: String(episode)});
+        const vrRes = await fetch(`${env.VIDROCK_RESOLVER_URL}/api/resolve?${vrParams}`, {
+          signal: AbortSignal.timeout(25000),
+          headers: {Accept: 'application/json'},
+        });
+        if (vrRes.ok) {
+          const vrData = await vrRes.json().catch(() => ({}));
+          const vrStreams = vrData.sources || vrData.streams || [];
+          vidRockSources = vrStreams.filter(s => {
+            try { const u = new URL(s?.url); return u.protocol === 'https:'; } catch { return false; }
+          }).map(s => ({
+            name: `VidRock · ${s.server || s.quality || 'HLS'}`,
+            origin: 'vidrock-resolved',
+            url: s.url,
+            type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
+            subtitles: [],
+          }));
+        }
+      } catch { /* resolver timeout — embed ile devam */ }
+    }
+
+    return json({sources: [...sources, ...vidRockSources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
   }
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);
