@@ -235,8 +235,11 @@ async function viewBrowse(v, kind, params) {
   $('.filter-search').onsubmit = e => { e.preventDefault(); location.hash = link({ara: e.target.ara.value.trim()}); };
   let page = 1;
   let loadingMore = false;
+  let scrollIo = null;
   const load = async () => {
     if (loadingMore) return;
+    // Temizle: önceki observer varsa bağlantısını kes (observer birikimini önle)
+    if (scrollIo) { scrollIo.disconnect(); scrollIo = null; }
     loadingMore = true;
     if (page === 1) {
       $('#grid').innerHTML = skeletonGrid();
@@ -262,7 +265,7 @@ async function viewBrowse(v, kind, params) {
         // Sonsuz scroll sentinel
         $('#more-wrap').innerHTML = '<div id="scroll-sentinel" style="height:1px"></div>';
         const sentinel = $('#scroll-sentinel');
-        const scrollIo = new IntersectionObserver(entries => {
+        scrollIo = new IntersectionObserver(entries => {
           if (entries[0].isIntersecting && !loadingMore) { page++; load(); }
         }, {rootMargin: '200px'});
         scrollIo.observe(sentinel);
@@ -729,6 +732,12 @@ sr.addEventListener('click', e => { if (e.target.closest('a')) sd.close(); });
 document.addEventListener('keydown', e => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
   if ((e.key === '/' && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) { e.preventDefault(); openSearch(); }
+  // Hamburger menüyü Escape ile kapat
+  if (e.key === 'Escape' && mainNav && mainNav.classList.contains('open')) {
+    mainNav.classList.remove('open');
+    hamburger?.setAttribute('aria-expanded', 'false');
+    hamburger?.focus();
+  }
 });
 
 // ---------------- Hamburger menü ----------------
@@ -738,6 +747,11 @@ if (hamburger && mainNav) {
   hamburger.onclick = () => {
     const open = mainNav.classList.toggle('open');
     hamburger.setAttribute('aria-expanded', String(open));
+    // Odak yönetimi: menü açıldığında ilk nav linkine odaklan
+    if (open) {
+      const firstLink = mainNav.querySelector('a');
+      if (firstLink) firstLink.focus();
+    }
   };
   // Nav link'e tıklandığında menü kapanır
   mainNav.addEventListener('click', e => {
