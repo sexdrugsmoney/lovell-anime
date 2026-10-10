@@ -46,6 +46,7 @@ jobs:
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
         run: |
           echo "${{ secrets.TMDB_READ_TOKEN }}" | npx wrangler secret put TMDB_READ_TOKEN --name lovell
+          echo "${{ secrets.VIDROCK_RESOLVER_URL }}" | npx wrangler secret put VIDROCK_RESOLVER_URL --name lovell
           echo "e4202b" | npx wrangler secret put VIDRIFT_COLOR --name lovell
           echo "LOVELL" | npx wrangler secret put VIDRIFT_BRAND --name lovell
           echo "89244d93" | npx wrangler secret put OMDB_API_KEY --name lovell
