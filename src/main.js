@@ -11,7 +11,7 @@ const store = {
   set(k, v) { try { localStorage.setItem('lovell.' + k, JSON.stringify(v)); } catch {} },
 };
 const keyOf = a => `${a.kind}:${a.id}`;
-const slim = a => ({kind: a.kind, id: a.id, title: a.title, poster: a.poster, backdrop: a.backdrop, year: a.year, score: a.score, isMovie: a.isMovie || a.kind === 'movie', section: secOf(a)});
+const slim = a => ({kind: a.kind, id: a.id, title: a.title, poster: a.poster, backdrop: a.backdrop, year: a.year, score: a.score, isMovie: a.isMovie || a.kind === 'movie', section: secOf(a), genres: (a.genres || []).slice(0, 4)});
 // Eski kayıtlarda bölüm bilgisi yok: o zamanlar site yalnızca anime içeriyordu.
 const secOf = a => a?.section === 'media' ? 'media' : 'anime';
 let myList = store.get('list', []);
@@ -172,13 +172,37 @@ const CACHE_TTL = {
   '/api/genres': 86400,
   '/api/browse': 300,
   '/api/search': 120,
+  '/api/title/': 600,
+  '/api/episodes/': 600,
 };
-async function api(path, timeout = 20000) {
+const apiInflight = new Map(); // aynı isteği iki kez atmamak için (ön yükleme + tıklama)
+// Üstte ince yükleme çubuğu: istek 150 ms'den uzun sürerse görünür.
+const busy = {n: 0, t: 0};
+function busyStart(quiet) {
+  if (quiet) return;
+  if (++busy.n === 1) { clearTimeout(busy.t); busy.t = setTimeout(() => document.documentElement.classList.add('loading-bar'), 150); }
+}
+function busyEnd(quiet) {
+  if (quiet) return;
+  if (--busy.n <= 0) { busy.n = 0; clearTimeout(busy.t); const root = document.documentElement; if (root.classList.contains('loading-bar')) { root.classList.add('loading-done'); setTimeout(() => root.classList.remove('loading-bar', 'loading-done'), 380); } }
+}
+async function api(path, timeout = 20000, {quiet = false} = {}) {
   const ttl = Object.entries(CACHE_TTL).find(([k]) => path.startsWith(k))?.[1];
   if (ttl) {
     const hit = apiCache.get(path);
     if (hit && hit.expires > Date.now()) return hit.data;
+    if (apiInflight.has(path)) return apiInflight.get(path);
   }
+  const run = (async () => {
+    busyStart(quiet);
+    try { return await apiFetch(path, timeout, ttl); } finally { busyEnd(quiet); if (ttl) apiInflight.delete(path); }
+  })();
+  if (ttl) apiInflight.set(path, run);
+  return run;
+}
+// Arka planda sessizce önceden yükle (hata gösterilmez).
+const prefetch = path => api(path, 20000, {quiet: true}).catch(() => {});
+async function apiFetch(path, timeout, ttl) {
   const r = await fetch(path, {signal: AbortSignal.timeout(timeout)});
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw Object.assign(Error(data.error || `HTTP ${r.status}`), {data});
@@ -359,6 +383,7 @@ function bindHero(items) {
     $$('.thumb', hero).forEach((t, k) => { t.setAttribute('aria-selected', k === i); t.classList.toggle('on', k === i); });
     imgFallback(hero);
     clearTimeout(heroTimer);
+    heroTrailer(hero, a, () => i === items.indexOf(a), () => show(i + 1));
     if (!reduceMotion && items.length > 1) heroTimer = setTimeout(() => { if (document.contains(hero) && !hero.matches(':hover, :focus-within')) show(i + 1); else heroTimer = setTimeout(() => show(i + 1), 9000); }, 9000);
   };
   $$('.thumb', hero).forEach(t => t.onclick = () => show(Number(t.dataset.i)));
@@ -386,6 +411,7 @@ async function viewHome(v) {
     <div class="page page-home tab-content-enter">
       ${shelf({title: section === 'anime' ? 'Kaldığın bölümden devam et' : 'İzlemeye devam et', items: recents, wide: true})}
       ${shelves.slice(0, 2).map(shelf).join('')}
+      ${forYouShelf(shelves, recents, listed)}
       ${shelf({title: 'Listem', items: listed, more: '#/listem', layout: section === 'media' ? 'land' : 'poster'})}
       ${shelves.slice(2, 5).map(shelf).join('')}
       ${genreLinks()}
@@ -408,6 +434,20 @@ function genreLinks() {
 function homeSkeleton() {
   const row = n => `<div class="shelf"><span class="skeleton" style="height:22px;width:220px;margin-bottom:16px"></span><div class="row row-${section === 'media' ? 'land' : 'poster'}">${Array.from({length: n}, () => `<span class="skeleton sk-${section === 'media' ? 'land' : 'poster'}"></span>`).join('')}</div></div>`;
   return `<div class="hero hero-skeleton"><div class="hero-shade"></div></div><div class="page page-home" role="status" aria-label="Yükleniyor">${row(8)}${row(8)}</div>`;
+}
+// "Senin için": listendeki ve izlediklerindeki türlere göre ana sayfadaki başlıkları puanlar.
+function forYouShelf(shelves, recents, listed) {
+  const seeds = [...listed, ...recents.map(r => r.item)];
+  if (!seeds.length) return '';
+  const weight = new Map();
+  seeds.forEach((a, i) => (a.genres?.length ? a.genres : ITEMS.get(keyOf(a))?.genres || []).forEach(g => weight.set(g, (weight.get(g) || 0) + (i < 6 ? 2 : 1))));
+  if (!weight.size) return '';
+  const seen = new Set(seeds.map(keyOf)), pool = new Map();
+  shelves.forEach(sh => sh.items.forEach(a => { if (!seen.has(keyOf(a)) && !pool.has(keyOf(a))) pool.set(keyOf(a), a); }));
+  const ranked = [...pool.values()].map(a => ({a, w: (a.genres || []).reduce((t, g) => t + (weight.get(g) || 0), 0) + (a.score || 0) / 10})).filter(x => x.w >= 1.5).sort((x, y) => y.w - x.w).slice(0, 18).map(x => x.a);
+  if (ranked.length < 4) return '';
+  const top = [...weight.entries()].sort((x, y) => y[1] - x[1]).slice(0, 2).map(([g]) => g.toLocaleLowerCase('tr'));
+  return shelf({title: `Senin için: ${top.join(' ve ')} sevenlere`, items: ranked, layout: section === 'media' ? 'land' : 'poster'}).replace('class="shelf ', 'class="shelf shelf-foryou ');
 }
 async function loadGenres() {
   try { genres = await api(withSection('/api/genres')); } catch { genres = []; }
@@ -1101,6 +1141,8 @@ const liveGroupOf = raw => {
   const up = String(raw || '').toLocaleUpperCase('tr');
   return LIVE_GROUPS.find(g => up.includes(g.key)) || {key: 'DIGER', name: String(raw || 'Diğer').replace(/^[^\p{L}\d]+/u, '').trim() || 'Diğer', icon: '<circle cx="10" cy="10" r="6"/>', h: 40};
 };
+const FAV_ICON = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8l2.2 4.6 5 .6-3.7 3.4 1 5-4.5-2.5-4.5 2.5 1-5L2.8 8l5-.6z"/></svg>';
+const liveFavs = () => store.get('liveFav', []);
 const liveIcon = g => `<svg viewBox="0 0 20 20" aria-hidden="true">${g.icon}</svg>`;
 
 function renderLiveTV(channels) {
@@ -1130,6 +1172,7 @@ function renderLiveTV(channels) {
         <button class="cat-btn active" data-cat="" type="button">Tümü <small>${channels.length}</small></button>
         ${ordered.map(g => `<button class="cat-btn" data-cat="${esc(g.name)}" type="button" style="--h:${g.h}">${liveIcon(g)}${esc(g.name)} <small>${g.items.length}</small></button>`).join('')}
       </nav>
+      <section class="ch-group ch-recent ch-favs" data-group="__recent" id="live-favs" ${favList().length ? '' : 'hidden'}>${favSection()}</section>
       ${recentLive.length ? `<section class="ch-group ch-recent" data-group="__recent"><h2 class="ch-group-head"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg>Son izlediklerin</h2><div class="livetv-grid">${recentLive.map((ch, i) => channelCard(ch, i)).join('')}</div></section>` : ''}
       <div id="livetv-grid">
         ${ordered.map(g => `<section class="ch-group" data-group="${esc(g.name)}" style="--h:${g.h}">
@@ -1141,8 +1184,24 @@ function renderLiveTV(channels) {
     </div>`;
   const page = $('.livetv-page');
   const open = card => card && openLiveChannel(card.dataset.url, card.dataset.name, card.dataset.logo, card.dataset.group);
-  page.addEventListener('click', e => open(e.target.closest('.ch-card')));
-  page.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ch-card')) { e.preventDefault(); open(e.target); } });
+  // Favori yıldızı: kanalı açmadan favorilere ekler / çıkarır.
+  const toggleFav = star => {
+    const url = star.closest('.ch-card').dataset.url;
+    const favs = liveFavs(), on = !favs.includes(url);
+    store.set('liveFav', on ? [url, ...favs] : favs.filter(u => u !== url));
+    $$('.ch-card', page).forEach(c => { if (c.dataset.url === url) { const st = $('.ch-fav', c); st.classList.toggle('on', on); st.setAttribute('aria-pressed', String(on)); } });
+    const box = $('#live-favs');
+    box.innerHTML = favSection();
+    box.hidden = !favList().length;
+    toast(on ? 'Favorilere eklendi' : 'Favorilerden çıkarıldı', on ? 'success' : 'info');
+  };
+  function favList() { return liveFavs().map(u => channels.find(c => c.url === u)).filter(Boolean); }
+  function favSection() { const l = favList(); return l.length ? `<h2 class="ch-group-head"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.8l2.2 4.6 5 .6-3.7 3.4 1 5-4.5-2.5-4.5 2.5 1-5L2.8 8l5-.6z"/></svg>Favorilerin<small>${l.length} kanal</small></h2><div class="livetv-grid">${l.map((ch, i) => channelCard(ch, i)).join('')}</div>` : ''; }
+  page.addEventListener('click', e => { const star = e.target.closest('.ch-fav'); if (star) { e.stopPropagation(); return toggleFav(star); } open(e.target.closest('.ch-card')); });
+  page.addEventListener('keydown', e => {
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ch-fav')) { e.preventDefault(); return toggleFav(e.target); }
+    if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ch-card')) { e.preventDefault(); open(e.target); }
+  });
   let cat = '';
   const apply = () => {
     const q = $('#livetv-search').value.toLocaleLowerCase('tr').trim();
@@ -1194,7 +1253,7 @@ function parseM3U(text) {
 function channelCard(ch, i = 0) {
   const g = liveGroupOf(ch.group);
   return `<div class="ch-card" data-url="${esc(ch.url)}" data-name="${esc(ch.name)}" data-logo="${esc(ch.logo)}" data-group="${esc(ch.group)}" role="button" tabindex="0" aria-label="${esc(ch.name)} canlı izle" style="--h:${g.h};--d:${Math.min(i, 16) * 25}ms">
-    <div class="ch-logo">${ch.logo ? `<img src="${esc(ch.logo)}" alt="" loading="lazy" decoding="async">` : `<span class="ch-ph">${esc(ch.name.slice(0, 2))}</span>`}<span class="ch-live"><i></i>CANLI</span><span class="ch-play">${PLAY}</span></div>
+    <div class="ch-logo">${ch.logo ? `<img src="${esc(ch.logo)}" alt="" loading="lazy" decoding="async">` : `<span class="ch-ph">${esc(ch.name.slice(0, 2))}</span>`}<span class="ch-live"><i></i>CANLI</span><span class="ch-play">${PLAY}</span><span class="ch-fav ${liveFavs().includes(ch.url) ? 'on' : ''}" role="button" tabindex="0" aria-pressed="${liveFavs().includes(ch.url)}" aria-label="Favorilere ekle">${FAV_ICON}</span></div>
     <div class="ch-name">${esc(ch.name)}</div>
   </div>`;
 }
@@ -1582,6 +1641,67 @@ document.addEventListener('pointermove', e => {
   li.style.setProperty('--my', (e.clientY - r.top) + 'px');
 }, {passive: true});
 
+// ---- Vitrinde sessiz fragman (Netflix gibi): birkaç saniye sonra arka planda oynar ----
+let trailerTimer = 0, trailerMuted = true;
+const heroVisible = new WeakMap();
+function heroTrailer(hero, a, stillCurrent, next) {
+  clearTimeout(trailerTimer);
+  $('.hero-trailer', hero)?.remove();
+  hero.classList.remove('trailer-on');
+  const conn = navigator.connection;
+  if (reduceMotion || innerWidth < 900 || conn?.saveData || /2g/.test(conn?.effectiveType || '') || store.get('heroTrailer', true) === false) return;
+  if (!heroVisible.has(hero)) {
+    heroVisible.set(hero, true);
+    new IntersectionObserver(([en]) => {
+      heroVisible.set(hero, en.isIntersecting);
+      const f = $('.hero-trailer iframe', hero);
+      if (f) ytCmd(f, en.isIntersecting ? 'playVideo' : 'pauseVideo');
+    }, {threshold: .35}).observe(hero);
+  }
+  trailerTimer = setTimeout(async () => {
+    if (!document.contains(hero) || !stillCurrent() || document.hidden || !heroVisible.get(hero)) return;
+    let d;
+    try { d = await api(`/api/title/${a.kind}/${a.id}`, 15000, {quiet: true}); } catch { return; }
+    const key = d?.trailer?.site === 'youtube' || d?.trailer?.key ? d.trailer.key : null;
+    if (!key || !document.contains(hero) || !stillCurrent()) return;
+    const box = document.createElement('div');
+    box.className = 'hero-trailer';
+    box.innerHTML = `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?autoplay=1&mute=1&controls=0&loop=1&playlist=${encodeURIComponent(key)}&modestbranding=1&playsinline=1&rel=0&iv_load_policy=3&disablekb=1&fs=0&enablejsapi=1&origin=${encodeURIComponent(location.origin)}" title="" allow="autoplay; encrypted-media" tabindex="-1" aria-hidden="true"></iframe>`;
+    $('.hero-bg', hero).append(box);
+    const f = $('iframe', box);
+    f.addEventListener('load', () => setTimeout(() => {
+      if (!document.contains(box)) return;
+      hero.classList.add('trailer-on');
+      if (!trailerMuted) ytCmd(f, 'unMute');
+      clearTimeout(heroTimer);
+      // Fragman oynarken vitrin kendiliğinden değişmez; 40 sn sonra sıradakine geçer.
+      heroTimer = setTimeout(() => { if (document.contains(hero) && !hero.matches(':hover, :focus-within')) next(); }, 40000);
+    }, 1400), {once: true});
+    let mute = $('.hero-mute', hero);
+    if (!mute) {
+      mute = document.createElement('button');
+      mute.type = 'button'; mute.className = 'hero-mute';
+      hero.append(mute);
+      mute.onclick = () => { trailerMuted = !trailerMuted; const fr = $('.hero-trailer iframe', hero); if (fr) ytCmd(fr, trailerMuted ? 'mute' : 'unMute'); drawMute(mute); };
+    }
+    drawMute(mute);
+  }, 2800);
+}
+function drawMute(b) {
+  b.setAttribute('aria-label', trailerMuted ? 'Fragmanın sesini aç' : 'Fragmanın sesini kapat');
+  b.innerHTML = trailerMuted
+    ? '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="m17 9 4 6M21 9l-4 6"/></svg>'
+    : '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 8.5a5 5 0 0 1 0 7M19.5 6a8.5 8.5 0 0 1 0 12"/></svg>';
+}
+function ytCmd(f, func) { try { f.contentWindow?.postMessage(JSON.stringify({event: 'command', func, args: []}), '*'); } catch {} }
+document.addEventListener('visibilitychange', () => { const f = $('.hero-trailer iframe'); if (f) ytCmd(f, document.hidden ? 'pauseVideo' : 'playVideo'); });
+
+// ---- Bir karta basılınca ayrıntıları hemen yüklemeye başla (sayfa daha hızlı açılır) ----
+document.addEventListener('pointerdown', e => {
+  const m = e.target.closest?.('a[href^="#/izle/"]')?.getAttribute('href').match(/#\/izle\/(tv|movie|al)\/(\d+)/);
+  if (m) prefetch(`/api/title/${m[1]}/${m[2]}`);
+}, {passive: true});
+
 // ---- Üzerine gelince büyüyen önizleme kartı (yalnızca fareyle) ----
 const canHover = matchMedia('(hover: hover) and (pointer: fine)');
 const peek = {el: null, src: null, timer: 0, hideTimer: 0, key: ''};
@@ -1613,6 +1733,7 @@ function showPeek(src) {
   if (!m || !document.contains(src)) return;
   const key = `${m[1]}:${m[2]}`, a = ITEMS.get(key);
   if (!a) return;
+  prefetch(`/api/title/${m[1]}/${m[2]}`);
   const el = peekEl();
   peek.src?.classList.remove('peeking');
   peek.src = src; peek.key = key;
