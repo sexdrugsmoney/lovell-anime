@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom'] });
+  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload'] });
 });
 
 // ---- TMDB helpers ----
@@ -624,6 +624,177 @@ app.get('/api/dizimom', async (req, res) => {
   }
 });
 
+// ---- CloseLoad (filmmakinesi.to) ----
+// Akış: GET closeload.filmmakinesi.to/video/embed/{id}/tmdb-id={tmdbId}
+// → HTML → packed JS unpack → Base64 double decode → m3u8
+function getAndUnpack(packed) {
+  // p,a,c,k,e,d unpacker
+  try {
+    const match = packed.match(/eval\(function\(p,a,c,k,e,(?:d|r)\)\{.*?\}\('(.*?)',(\d+),(\d+),'(.*?)'\.split\('\|'\)/s);
+    if (!match) return packed;
+    let [, p, a, , k] = match;
+    a = parseInt(a);
+    k = k.split('|');
+    const e = (c) => (c ? (c < a ? '' : e(Math.floor(c / a))) + (c % a > 35 ? String.fromCharCode(c % a + 29) : (c % a).toString(36)) : c);
+    for (let i = k.length - 1; i >= 0; i--) {
+      if (k[i]) p = p.replace(new RegExp(`\\b${e(i)}\\b`, 'g'), k[i]);
+    }
+    return p;
+  } catch { return packed; }
+}
+
+function closeloadM3u8(data) {
+  try {
+    // Base64 decode → reverse bytes → Base64 decode → split("|")[1]
+    const first = Buffer.from(data, 'base64');
+    const reversed = Buffer.from([...first].reverse());
+    const second = Buffer.from(reversed.toString('ascii'), 'base64');
+    return second.toString('utf8').split('|')[1] || null;
+  } catch { return null; }
+}
+
+app.get('/api/closeload', async (req, res) => {
+  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+
+  const cacheKey = `closeload:${tmdbId}:${type}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+  const CLOSELOAD_BASE = 'https://closeload.filmmakinesi.to';
+
+  try {
+    // 1. lema/v1 API'den film bilgisi al — filmmakinesi.to TMDB ID ile eşleme yapar
+    // CloseLoad embed URL direkt TMDB ID ile çalışıyor
+    let embedPath;
+    if (type === 'movie') {
+      // Film: /video/embed/{id}/tmdb-id={tmdbId} — videoId'yi bulmak için önce arama yap
+      // filmmakinesi.to arama API'si
+      const searchRes = await fetch(
+        `https://filmmakinesi.to/lema/v1/search?tmdb=${tmdbId}&type=movie`,
+        {
+          signal: AbortSignal.timeout(10000),
+          headers: { 'User-Agent': UA, 'Accept': 'application/json', 'Referer': 'https://filmmakinesi.to/' },
+        }
+      );
+      if (searchRes.ok) {
+        const searchData = await searchRes.json().catch(() => null);
+        const videoId = searchData?.closeload_id || searchData?.video_id || searchData?.embed_id
+          || searchData?.data?.[0]?.closeload_id || searchData?.results?.[0]?.closeload_id;
+        if (videoId) {
+          embedPath = `/video/embed/${videoId}/ah/`;
+        }
+      }
+      // Fallback: tmdb-id ile direkt dene
+      if (!embedPath) {
+        embedPath = `/video/embed/tmdb-${tmdbId}/ah/`;
+      }
+    } else {
+      // Dizi
+      const searchRes = await fetch(
+        `https://filmmakinesi.to/lema/v1/search?tmdb=${tmdbId}&type=tv&season=${season}&episode=${episode}`,
+        {
+          signal: AbortSignal.timeout(10000),
+          headers: { 'User-Agent': UA, 'Accept': 'application/json', 'Referer': 'https://filmmakinesi.to/' },
+        }
+      );
+      if (searchRes.ok) {
+        const searchData = await searchRes.json().catch(() => null);
+        const videoId = searchData?.closeload_id || searchData?.video_id
+          || searchData?.data?.[0]?.closeload_id;
+        if (videoId) embedPath = `/video/embed/${videoId}/ah/`;
+      }
+      if (!embedPath) embedPath = `/video/embed/tmdb-${tmdbId}-s${season}e${episode}/ah/`;
+    }
+
+    // 2. CloseLoad embed sayfasını GET ile çek (referer: filmmakinesi.to)
+    const embedUrl = `${CLOSELOAD_BASE}${embedPath}`;
+    const embedRes = await fetch(embedUrl, {
+      signal: AbortSignal.timeout(10000),
+      method: 'GET',
+      headers: {
+        'User-Agent': UA,
+        'Referer': 'https://filmmakinesi.to/',
+        'Accept': 'text/html,application/xhtml+xml',
+        'sec-fetch-dest': 'iframe',
+        'sec-fetch-mode': 'navigate',
+        'sec-fetch-site': 'same-site',
+      },
+    });
+
+    if (!embedRes.ok) throw new Error(`CloseLoad GET HTTP ${embedRes.status}`);
+    const embedHtml = await embedRes.text();
+
+    // 3. Hash değerini HTML'den çıkar
+    const hashMatch = embedHtml.match(/var\s+\w+\s*=\s*['"]([a-f0-9]{32})['"]/i)
+      || embedHtml.match(/hash['":\s]+['"]([a-f0-9]{32})['"]/i);
+    if (!hashMatch) throw new Error('CloseLoad hash bulunamadı');
+    const hash = hashMatch[1];
+
+    // 4. POST ile video kaynağını al
+    const postRes = await fetch(embedUrl, {
+      signal: AbortSignal.timeout(10000),
+      method: 'POST',
+      headers: {
+        'User-Agent': UA,
+        'Referer': embedUrl,
+        'Origin': CLOSELOAD_BASE,
+        'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+        'X-Requested-With': 'XMLHttpRequest',
+        'sec-fetch-dest': 'empty',
+        'sec-fetch-mode': 'same-origin',
+        'sec-fetch-site': 'same-origin',
+      },
+      body: new URLSearchParams({ hash }).toString(),
+    });
+
+    if (!postRes.ok) throw new Error(`CloseLoad POST HTTP ${postRes.status}`);
+    const postHtml = await postRes.text();
+
+    // 5. Packed JS bul ve unpack et
+    const scriptMatch = postHtml.match(/eval\(function\(p,a,c,k,e,(?:d|r)\)[\s\S]+?\)\)/);
+    if (!scriptMatch) throw new Error('Packed JS bulunamadı');
+
+    const unpacked = getAndUnpack(scriptMatch[0]);
+
+    // 6. Base64 encoded data'yı çıkar
+    // Pattern: var XXX=("XXXXXX") veya return result}var XXX=("XXXXX")
+    const dataMatch = unpacked.match(/return result\}[^(]*\(["']([A-Za-z0-9+/=]+)['"]\)/)
+      || unpacked.match(/['"]((?:[A-Za-z0-9+/]{4}){8,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)['"]/);
+
+    if (!dataMatch) throw new Error('Base64 data bulunamadı');
+
+    const m3u8Url = closeloadM3u8(dataMatch[1]);
+    if (!m3u8Url || !m3u8Url.startsWith('http')) throw new Error('m3u8 URL çıkarılamadı');
+
+    // 7. Altyazıları da çıkar
+    const $ = cheerio.load(postHtml);
+    const subtitles = [];
+    $('track[kind="subtitles"], track[kind="captions"]').each((_, el) => {
+      const src = $(el).attr('src');
+      const label = $(el).attr('label') || 'Altyazı';
+      const lang = $(el).attr('srclang') || 'tr';
+      if (src) subtitles.push({ url: src, label, lang });
+    });
+
+    const result = {
+      sources: [{
+        url: m3u8Url,
+        quality: '1080p',
+        name: 'FilmMakinesi (TR Dublaj)',
+        type: 'hls',
+        lang: 'tr-dub',
+        subtitles,
+      }],
+    };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
 // ---- All (parallel) ----
 app.get('/api/all', async (req, res) => {
   const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
@@ -658,6 +829,7 @@ app.get('/api/all', async (req, res) => {
     const results = await Promise.all([
       fetchSource(`${base}/api/hdfilmcehennemi?${tmdbParam}`),
       fetchSource(`${base}/api/sinewix?${tmdbParam}&type=movie`),
+      fetchSource(`${base}/api/closeload?${tmdbParam}&type=movie`),
     ]);
     allSources = results.flat();
   }
