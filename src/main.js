@@ -622,7 +622,8 @@ function mountEmbed(ctx, index) {
       class="vidrift-frame"
       src="${esc(embed.url)}"
       allowfullscreen
-      allow="autoplay; fullscreen; encrypted-media *; autoplay *; fullscreen *"
+      allow="autoplay; fullscreen; encrypted-media *; autoplay *; fullscreen *; picture-in-picture *"
+      sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"
       title="${esc(ctx.a.title)}"
       referrerpolicy="strict-origin-when-cross-origin"
     ></iframe>
