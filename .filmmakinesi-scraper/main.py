@@ -60,7 +60,43 @@ def closeload_decode(b64: str) -> Optional[str]:
 
 
 def make_session() -> cffi_requests.Session:
-    return cffi_requests.Session(impersonate="chrome124")
+    s = cffi_requests.Session(impersonate="chrome131")
+    return s
+
+
+def bypass_cloudflare(session: cffi_requests.Session, url: str) -> Optional[cffi_requests.Response]:
+    """İlk önce ana sayfayı ziyaret ederek Cloudflare cookie'lerini al, sonra hedef URL'ye git."""
+    try:
+        # Önce ana sayfayı ziyaret et — CF cookie al
+        session.get(
+            FM_BASE + "/",
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            },
+            timeout=20,
+            allow_redirects=True,
+        )
+        import time
+        time.sleep(1)
+        # Şimdi hedef URL'ye git
+        resp = session.get(
+            url,
+            headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+                "Accept-Language": "tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7",
+                "Referer": FM_BASE + "/",
+                "Upgrade-Insecure-Requests": "1",
+            },
+            timeout=20,
+            allow_redirects=True,
+        )
+        return resp
+    except Exception as e:
+        return None
 
 
 def find_video_id_in_html(html: str) -> Optional[str]:
@@ -110,30 +146,30 @@ def stream(
 
         video_id = None
 
-        # 2a. filmmakinesi.to ana sayfasında arama yap
-        # URL pattern: /film/{slug}-izle-{yil}-fm{id}/
-        # Arama: https://filmmakinesi.to/?s={query}
+        # 2a. Önce CF bypass — ana sayfayı ziyaret et
+        bypass_cloudflare(session, FM_BASE + "/")
+
+        # 2b. filmmakinesi.to'da arama yap
         for title in filter(None, [tr_title, orig_title]):
             try:
-                search_url = f"{FM_BASE}/?s={cffi_requests.utils.quote(title)}"
+                import urllib.parse
+                search_url = f"{FM_BASE}/?s={urllib.parse.quote(title)}"
                 search_resp = session.get(
                     search_url,
-                    headers={"Referer": FM_BASE + "/"},
+                    headers={"Referer": FM_BASE + "/",
+                             "Accept": "text/html,application/xhtml+xml",
+                             "Accept-Language": "tr-TR,tr;q=0.9"},
                     timeout=15,
                 )
                 if search_resp.ok:
                     html = search_resp.text
-                    # Film linklerini bul: /film/xxx-fm123/
                     film_links = re.findall(
-                        r'href=[\'"](' + re.escape(FM_BASE) + r'/film/[^\'"]+)[\'"]',
-                        html
+                        r'href=[\'"](' + re.escape(FM_BASE) + r'/film/[^\'"]+)[\'"]', html
                     )
                     if not film_links:
-                        film_links = re.findall(r'href=[\'"](/film/[^\'"]+)[\'"]', html)
-                        film_links = [FM_BASE + l for l in film_links]
-
+                        rel_links = re.findall(r'href=[\'"](/film/[^\'"]+)[\'"]', html)
+                        film_links = [FM_BASE + l for l in rel_links]
                     if film_links:
-                        # İlk eşleşen linke git
                         film_resp = session.get(
                             film_links[0],
                             headers={"Referer": search_url},
@@ -141,7 +177,6 @@ def stream(
                         )
                         if film_resp.ok:
                             video_id = find_video_id_in_html(film_resp.text)
-
                 if video_id:
                     break
             except Exception:
@@ -283,14 +318,17 @@ def test_url(url: str = Query(...)):
     """Herhangi bir URL'yi curl-cffi ile çek ve ilk 2000 karakteri döndür (debug)."""
     try:
         session = make_session()
-        resp = session.get(url, headers={"Referer": FM_BASE + "/"}, timeout=15)
-        html = resp.text[:2000]
+        resp = bypass_cloudflare(session, url)
+        if not resp:
+            return {"error": "bypass başarısız"}
+        html = resp.text[:3000]
         video_id = find_video_id_in_html(resp.text)
         return {
             "status": resp.status_code,
             "video_id": video_id,
             "html_preview": html,
             "length": len(resp.text),
+            "cf_cookies": [c.name for c in session.cookies],
         }
     except Exception as ex:
         return {"error": str(ex)}
