@@ -495,19 +495,20 @@ async function api(url, env) {
     const embeds = buildEmbeds(kind, id, alId, season, episode, {brand, brandColor, brandLogo});
     const vidrift = embeds.find(e => e.id === 'vidrift')?.url || null;
 
-    // VidRock Resolver — VIDROCK_RESOLVER_URL varsa HLS kaynağını çek
-    let vidRockSources = [];
-    if (env.VIDROCK_RESOLVER_URL && kind !== 'al') {
-      try {
-        const vrParams = new URLSearchParams({type: kind, id, season: String(season), episode: String(episode)});
-        const vrRes = await fetch(`${env.VIDROCK_RESOLVER_URL}/api/resolve?${vrParams}`, {
-          signal: AbortSignal.timeout(25000),
-          headers: {Accept: 'application/json'},
-        });
-        if (vrRes.ok) {
+    // VidRock, Anthology ve CloseLoad — paralel çalıştır, toplam max 12s
+    const [vidRockSources, anthologySources, closeloadSources] = await Promise.all([
+      // VidRock Resolver
+      (async () => {
+        if (!env.VIDROCK_RESOLVER_URL || kind === 'al') return [];
+        try {
+          const vrParams = new URLSearchParams({type: kind, id, season: String(season), episode: String(episode)});
+          const vrRes = await fetch(`${env.VIDROCK_RESOLVER_URL}/api/resolve?${vrParams}`, {
+            signal: AbortSignal.timeout(10000),
+            headers: {Accept: 'application/json'},
+          });
+          if (!vrRes.ok) return [];
           const vrData = await vrRes.json().catch(() => ({}));
-          const vrStreams = vrData.sources || vrData.streams || [];
-          vidRockSources = vrStreams.filter(s => {
+          return (vrData.sources || vrData.streams || []).filter(s => {
             try { const u = new URL(s?.url); return u.protocol === 'https:'; } catch { return false; }
           }).map(s => ({
             name: `VidRock · ${s.server || s.quality || 'HLS'}`,
@@ -516,27 +517,21 @@ async function api(url, env) {
             type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
             subtitles: [],
           }));
-        }
-      } catch { /* resolver timeout — embed ile devam */ }
-    }
+        } catch { return []; }
+      })(),
 
-    // Anthology Scraper — Türkçe kaynaklar
-    let anthologySources = [];
-    if (env.ANTHOLOGY_SCRAPER_URL) {
-      try {
-        const antParams = new URLSearchParams({
-          tmdbId: id,
-          type: kind,
-          season: String(season),
-          episode: String(episode),
-        });
-        const antRes = await fetch(`${env.ANTHOLOGY_SCRAPER_URL}/api/all?${antParams}`, {
-          signal: AbortSignal.timeout(20000),
-          headers: {Accept: 'application/json'},
-        });
-        if (antRes.ok) {
+      // Anthology Scraper — Türkçe kaynaklar
+      (async () => {
+        if (!env.ANTHOLOGY_SCRAPER_URL) return [];
+        try {
+          const antParams = new URLSearchParams({tmdbId: id, type: kind, season: String(season), episode: String(episode)});
+          const antRes = await fetch(`${env.ANTHOLOGY_SCRAPER_URL}/api/all?${antParams}`, {
+            signal: AbortSignal.timeout(12000),
+            headers: {Accept: 'application/json'},
+          });
+          if (!antRes.ok) return [];
           const antData = await antRes.json().catch(() => ({}));
-          anthologySources = (antData.sources || []).filter(s => {
+          return (antData.sources || []).filter(s => {
             try { const u = new URL(s?.url); return u.protocol === 'https:'; } catch { return false; }
           }).map(s => ({
             name: s.name || 'Türkçe',
@@ -545,20 +540,20 @@ async function api(url, env) {
             type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
             subtitles: s.subtitles || [],
           }));
-        }
-      } catch { /* timeout — embed'lerle devam */ }
-    }
+        } catch { return []; }
+      })(),
 
-    // CloseLoad (filmmakinesi.to) — Worker üzerinden direkt fetch (Cloudflare IP'si bloke edilmez)
-    let closeloadSources = [];
-    if (kind === 'movie') {
-      try {
-        closeloadSources = await Promise.race([
-          fetchCloseLoad(id, env),
-          new Promise(resolve => setTimeout(() => resolve([]), 10000)),
-        ]);
-      } catch { /* hata — diğer kaynaklarla devam */ }
-    }
+      // CloseLoad (filmmakinesi.to)
+      (async () => {
+        if (kind !== 'movie') return [];
+        try {
+          return await Promise.race([
+            fetchCloseLoad(id, env),
+            new Promise(resolve => setTimeout(() => resolve([]), 10000)),
+          ]);
+        } catch { return []; }
+      })(),
+    ]);
 
     return json({sources: [...sources, ...vidRockSources, ...anthologySources, ...closeloadSources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
   }
