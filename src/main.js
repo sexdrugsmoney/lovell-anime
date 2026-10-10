@@ -1573,6 +1573,107 @@ document.addEventListener('pointerdown', e => {
   addEventListener('pointerup', up);
 });
 
+// ---- Yatay kartlarda imleci izleyen ışık ----
+document.addEventListener('pointermove', e => {
+  const li = e.target.closest?.('.land-img');
+  if (!li) return;
+  const r = li.getBoundingClientRect();
+  li.style.setProperty('--mx', (e.clientX - r.left) + 'px');
+  li.style.setProperty('--my', (e.clientY - r.top) + 'px');
+}, {passive: true});
+
+// ---- Üzerine gelince büyüyen önizleme kartı (yalnızca fareyle) ----
+const canHover = matchMedia('(hover: hover) and (pointer: fine)');
+const peek = {el: null, src: null, timer: 0, hideTimer: 0, key: ''};
+function peekEl() {
+  if (peek.el) return peek.el;
+  const el = document.createElement('div');
+  el.className = 'peek'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Önizleme');
+  el.addEventListener('mouseenter', () => clearTimeout(peek.hideTimer));
+  el.addEventListener('mouseleave', () => hidePeekSoon());
+  document.body.append(el);
+  return (peek.el = el);
+}
+function hidePeek(now) {
+  clearTimeout(peek.timer); clearTimeout(peek.hideTimer);
+  const el = peek.el;
+  if (!el || !el.classList.contains('open')) return;
+  peek.src?.classList.remove('peeking');
+  const done = () => { el.classList.remove('open'); el.style.visibility = ''; };
+  if (now || reduceMotion || !el.animate) return done();
+  const r = peek.src?.getBoundingClientRect(), b = el.getBoundingClientRect();
+  const to = r && r.width ? `translate(${r.left + r.width / 2 - (b.left + b.width / 2)}px, ${r.top + r.height / 2 - (b.top + b.height / 2)}px) scale(${r.width / b.width})` : 'scale(.92)';
+  el.animate([{transform: 'none', opacity: 1}, {transform: to, opacity: 0}], {duration: 200, easing: 'cubic-bezier(.4,0,.6,1)'}).onfinish = done;
+  peek.key = '';
+}
+function hidePeekSoon() { clearTimeout(peek.hideTimer); peek.hideTimer = setTimeout(() => hidePeek(), 140); }
+function showPeek(src) {
+  const href = src.getAttribute('href') || '';
+  const m = href.match(/#\/izle\/(tv|movie|al)\/(\d+)/);
+  if (!m || !document.contains(src)) return;
+  const key = `${m[1]}:${m[2]}`, a = ITEMS.get(key);
+  if (!a) return;
+  const el = peekEl();
+  peek.src?.classList.remove('peeking');
+  peek.src = src; peek.key = key;
+  src.classList.add('peeking');
+  const img = a.backdrop || a.poster;
+  const genres = (a.genres || []).slice(0, 3);
+  el.innerHTML = `<a class="peek-media" href="${href}" tabindex="-1">${img ? `<img src="${esc(img)}" alt="" class="${a.backdrop ? '' : 'is-poster'}">` : `<span class="peek-ph">${esc(a.title)}</span>`}<span class="peek-shade"></span><span class="peek-title">${esc(a.title)}</span></a>
+    <div class="peek-body">
+      <div class="peek-acts">
+        <a class="peek-play" href="${href}" aria-label="Oynat">${PLAY}</a>
+        <span class="qa-btn ${inList(a) ? 'on' : ''}" role="button" tabindex="0" data-list="${key}" aria-label="${inList(a) ? 'Listeden çıkar' : 'Listeye ekle'}">${inList(a) ? CHECK : PLUS}</span>
+        <span class="qa-btn peek-more" role="button" tabindex="0" data-info="${key}" aria-label="Ayrıntılar"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="m4 6 4 4 4-4"/></svg></span>
+      </div>
+      <p class="peek-meta">${a.score ? `<span class="peek-score">${STAR}${score(a.score)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}<span class="kind-pill">${kindLabel(a)}</span></p>
+      ${genres.length ? `<p class="peek-genres">${genres.map(g => `<span>${esc(g)}</span>`).join('')}</p>` : ''}
+      ${a.overview ? `<p class="peek-text">${esc(a.overview)}</p>` : ''}
+    </div>`;
+  // Konum: kartın ortasına göre, ekrandan taşmayacak şekilde.
+  const r = src.getBoundingClientRect();
+  const w = Math.round(Math.min(Math.max(r.width * 1.45, 320), 420));
+  el.style.width = w + 'px';
+  el.style.visibility = 'hidden';
+  el.classList.add('open');
+  const h = el.offsetHeight;
+  const left = Math.min(Math.max(12, r.left + r.width / 2 - w / 2), innerWidth - w - 12);
+  const top = Math.min(Math.max(76, r.top + r.height / 2 - h * 0.42), innerHeight - h - 12);
+  el.style.left = left + scrollX + 'px';
+  el.style.top = top + scrollY + 'px';
+  el.style.visibility = '';
+  ambientFrom(img, el);
+  if (!reduceMotion && el.animate) {
+    const from = `translate(${r.left + r.width / 2 - (left + w / 2)}px, ${r.top + r.height / 2 - (top + h / 2)}px) scale(${r.width / w})`;
+    el.animate([{transform: from, opacity: .4}, {transform: 'none', opacity: 1}], {duration: 360, easing: 'cubic-bezier(.22,1,.36,1)'});
+    $$('.peek-body > *', el).forEach((c, i) => c.animate([{opacity: 0, transform: 'translateY(8px)'}, {opacity: 1, transform: 'none'}], {duration: 320, delay: 120 + i * 45, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards'}));
+  }
+}
+document.addEventListener('mouseover', e => {
+  if (!canHover.matches || innerWidth < 900) return;
+  const src = e.target.closest?.('#main .row .card, #main .row .land, #main .row .rank, #main .grid .card, #main .grid .land');
+  if (!src) return;
+  if (src === peek.src && peek.key) { clearTimeout(peek.hideTimer); return; }
+  clearTimeout(peek.timer);
+  // Kısa bir bekleme: fare kartların üzerinden geçerken her birinde açılmasın.
+  peek.timer = setTimeout(() => { if (src.matches(':hover')) showPeek(src); }, peek.key ? 160 : 480);
+});
+document.addEventListener('mouseout', e => {
+  const src = e.target.closest?.('.card, .land, .rank');
+  if (!src || src.contains(e.relatedTarget)) return;
+  if (e.relatedTarget && peek.el?.contains(e.relatedTarget)) return;
+  clearTimeout(peek.timer);
+  if (src === peek.src) hidePeekSoon();
+});
+addEventListener('scroll', () => peek.key && hidePeek(true), {passive: true});
+addEventListener('blur', () => hidePeek(true));
+addEventListener('hashchange', () => hidePeek(true));
+document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePeek(); });
+// Detay penceresi açılınca önizleme kapanır.
+document.addEventListener('click', e => { if (e.target.closest?.('[data-info]')) hidePeek(true); }, true);
+// Satırlar yatay kayınca da kapat.
+document.addEventListener('scroll', e => { if (peek.key && e.target.classList?.contains('row')) hidePeek(true); }, {capture: true, passive: true});
+
 // ---------------- Yönlendirme ----------------
 let routeId = 0;
 let _scrollIo = null; // viewBrowse sonsuz scroll observer — route değişiminde temizlenir

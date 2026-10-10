@@ -1253,3 +1253,86 @@ body { transition: background-color .3s ease, color .3s ease; }
   .hero .actions { flex-wrap: nowrap; }
   .keys dl div { grid-template-columns: 1fr; gap: 4px; }
 }
+
+/* =====================================================================
+   AKICI HOVER (v10): büyüyen önizleme kartı, yumuşak geçişler, odak
+   ===================================================================== */
+:root { --ease-out: cubic-bezier(.22, 1, .36, 1); --ease-spring: cubic-bezier(.34, 1.4, .64, 1); }
+
+/* Önizleme kartı */
+.peek { position: absolute; z-index: 45; visibility: hidden; border-radius: 14px; overflow: hidden; background: var(--bg-2); color: var(--text); box-shadow: 0 30px 70px -18px rgba(0,0,0,.85), 0 0 0 1px color-mix(in srgb, var(--line) 80%, transparent), 0 0 60px -10px color-mix(in srgb, var(--ambc) 65%, transparent); transform-origin: center; will-change: transform, opacity; transition: --ambc .8s ease; }
+.peek.open { visibility: visible; }
+.peek:not(.open) { pointer-events: none; }
+.peek-media { position: relative; display: block; aspect-ratio: 16 / 9; background: var(--bg-3); overflow: hidden; }
+.peek-media img { width: 100%; height: 100%; object-fit: cover; animation: peek-zoom 6s ease-out both; }
+.peek-media img.is-poster { object-position: center 22%; }
+@keyframes peek-zoom { from { transform: scale(1.12); } }
+.peek-ph { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; font: 800 22px var(--display); font-stretch: 80%; color: var(--faint); }
+.peek-shade { position: absolute; inset: 0; background: linear-gradient(0deg, var(--bg-2) 0%, color-mix(in srgb, var(--bg-2) 30%, transparent) 30%, transparent 60%); }
+.peek-title { position: absolute; left: 14px; right: 14px; bottom: 8px; font: 900 clamp(18px, 1.6vw, 24px)/1 var(--display); font-stretch: 78%; letter-spacing: -.005em; text-shadow: 0 2px 14px rgba(0,0,0,.6); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+:root[data-section="anime"] .peek-title { font-style: italic; }
+.peek-body { display: grid; gap: 9px; padding: 10px 14px 16px; }
+.peek-acts { display: flex; align-items: center; gap: 8px; }
+.peek-acts .qa-btn { width: 38px; height: 38px; background: transparent; border-color: color-mix(in srgb, var(--text) 45%, transparent); color: var(--text); backdrop-filter: none; }
+.peek-acts .qa-btn:hover { background: var(--text); color: var(--bg); border-color: var(--text); }
+.peek-acts .qa-btn.on { background: var(--red); border-color: transparent; color: #fff; }
+:root[data-section="anime"] .peek-acts .qa-btn.on { background: var(--grad); }
+.peek-more { margin-left: auto; }
+.peek-more svg { width: 17px; height: 17px; }
+.peek-play { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: #fff; color: #000; transition: transform .25s var(--ease-spring), background .2s; }
+.peek-play svg { width: 15px; height: 15px; fill: currentColor; margin-left: 3px; }
+.peek-play:hover { transform: scale(1.12); background: #e8e8e8; }
+:root[data-section="anime"] .peek-play { background: var(--grad); color: #fff; }
+.peek-acts .qa-btn, .peek-play { transition: transform .25s var(--ease-spring), background .2s, color .2s, border-color .2s; }
+.peek-acts .qa-btn:active, .peek-play:active { transform: scale(.92); }
+.peek-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; font-size: 13px; color: var(--dim); font-weight: 600; }
+.peek-score { display: inline-flex; align-items: center; gap: 4px; color: #46d369; font-weight: 800; }
+.peek-score .star { fill: #46d369; }
+:root[data-section="anime"] .peek-score { color: var(--text); }
+:root[data-section="anime"] .peek-score .star { fill: var(--red); }
+.peek-genres { display: flex; flex-wrap: wrap; gap: 4px 0; font-size: 12.5px; color: var(--text); }
+.peek-genres span + span::before { content: "•"; margin: 0 7px; color: var(--faint); }
+.peek-text { font-size: 13px; line-height: 1.5; color: var(--dim); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+
+/* Önizleme açıkken alttaki kart sakinleşir */
+.peeking { transform: none !important; }
+.peeking .qa { opacity: 0 !important; }
+
+/* Daha akıcı temel hover: uzun, yumuşak eğriler; görsel içten yakınlaşır */
+.card, .land, .rank, .wide { transition: transform .5s var(--ease-out), opacity .3s ease, filter .4s ease; }
+.card-img, .land-img, .wide-img { transition: box-shadow .4s var(--ease-out), transform .5s var(--ease-out); }
+:is(.card-img, .land-img, .wide-img) img.ld { transition: opacity .5s ease, transform .8s var(--ease-out); }
+:is(.card, .rank):hover .card-img img.ld, .land:hover .land-img img.ld, .wide:hover .wide-img img.ld { transform: scale(1.07); }
+.card-img::after { transition: opacity .4s ease; }
+.card-hover { transition: opacity .3s ease, transform .45s var(--ease-spring); }
+.qa { transition: opacity .3s ease, transform .45s var(--ease-out); }
+.qa-btn { transition: background .2s, border-color .2s, color .2s, transform .3s var(--ease-spring); }
+.land-meta { transition: max-height .4s var(--ease-out), opacity .35s ease; }
+.land-play { transition: opacity .3s ease, transform .45s var(--ease-spring); }
+.wide-play { transition: transform .45s var(--ease-spring), background .2s; }
+.wide:hover .wide-play { transform: scale(1.15); background: var(--red); }
+.wide:hover { transform: translateY(-4px); }
+
+/* Odak: satırda üzerine gelinen kart öne çıkar, diğerleri hafifçe geri çekilir */
+@media (hover: hover) and (pointer: fine) {
+  .row:has(> :is(.card, .land, .rank, .wide):hover) > :is(.card, .land, .rank, .wide):not(:hover) { filter: brightness(.62) saturate(.75); }
+  .grid:has(> :is(.card, .land):hover) > :is(.card, .land):not(:hover) { filter: brightness(.7) saturate(.8); }
+  :root[data-section="anime"] .card:hover { transform: translateY(-8px); }
+  :root[data-section="media"] .card:hover { transform: scale(1.06); }
+  .rank:hover { transform: translateY(-6px); }
+  .rank:hover .rank-n { transform: translateX(-6px); transition: transform .5s var(--ease-out); }
+  .rank .rank-n { transition: transform .5s var(--ease-out); }
+  .genre-grid a { transition: transform .45s var(--ease-out), filter .3s; }
+  .genre-grid a:hover { transform: translateY(-4px); }
+  .ch-card { transition: transform .5s var(--ease-out), border-color .3s, box-shadow .4s var(--ease-out), background .3s; }
+}
+
+/* Kartın üzerinde gezinen ışık (imleci izler) */
+.land-img::after { content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none; opacity: 0; transition: opacity .35s; background: radial-gradient(240px circle at var(--mx, 50%) var(--my, 50%), rgba(255,255,255,.14), transparent 60%); }
+.land:hover .land-img::after { opacity: 1; }
+
+@media (prefers-reduced-motion: reduce) {
+  .peek-media img { animation: none; }
+  .row:has(> :hover) > :not(:hover), .grid:has(> :hover) > :not(:hover) { filter: none !important; }
+  :is(.card, .rank, .land, .wide):hover :is(.card-img, .land-img, .wide-img) img.ld { transform: none; }
+}
