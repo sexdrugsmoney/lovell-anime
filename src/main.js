@@ -780,17 +780,12 @@ function mountEmbed(ctx, index) {
   const stage = $('#stage');
   const hasLocal = !CLOUD;
 
-  // VidRift ve bazı sağlayıcılar sandbox'ı reddeder
-  const noSandbox = ['vidrift', 'vidsrc', 'vidsrcio', 'vidsrcto', 'vidsrcmov', 'vidrock', 'yapgrid', 'streamflizo', 'megaplay', 'vidhawk', 'justplay', 'aniembed'];
-  const useSandbox = !noSandbox.includes(embed.id);
-
   stage.innerHTML = `<div class="stage-inner vidrift-wrap">
     <iframe
       class="vidrift-frame"
       src="${esc(embed.url)}"
       allowfullscreen
       allow="autoplay; fullscreen; encrypted-media *; autoplay *; fullscreen *; picture-in-picture *"
-      ${useSandbox ? 'sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"' : ''}
       title="${esc(ctx.a.title)}"
       referrerpolicy="strict-origin-when-cross-origin"
     ></iframe>
