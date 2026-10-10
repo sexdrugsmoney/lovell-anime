@@ -11,7 +11,7 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Onest:wght@400;500;600;700&display=swap">
 <script>try{const d=document.documentElement,t=localStorage.getItem('lovell.theme');if(t)d.dataset.theme=t;const s=JSON.parse(localStorage.getItem('lovell.tab')||'"anime"');d.dataset.section=s==='media'||s==='movies'?'media':'anime'}catch{document.documentElement.dataset.section='anime'}</script>
-<link rel="stylesheet" href="/src/style.css?v=7">
+<link rel="stylesheet" href="/src/style.css?v=9">
 </head>
 <body>
 <a class="skip" href="#main">İçeriğe geç</a>
@@ -24,7 +24,7 @@
       <span class="tab-glider" aria-hidden="true"></span>
       <button class="tab-btn active" role="tab" aria-selected="true" data-tab="anime" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5l1.9 4.6 4.9.4-3.7 3.2 1.1 4.8L10 13l-4.2 2.5 1.1-4.8-3.7-3.2 4.9-.4z"/></svg><span>Anime</span></button>
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="media" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="4.5" width="15" height="11" rx="2"/><path d="M8.5 8v4l3.5-2z"/></svg><span>Film &amp; Dizi</span></button>
-      <button class="tab-btn" role="tab" aria-selected="false" data-tab="livetv" type="button">📺 Canlı TV</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="livetv" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="5.5" width="15" height="10" rx="2"/><path class="ln" d="M7 2.5l3 3 3-3"/></svg><span>Canlı TV</span><i class="tab-live" aria-hidden="true"></i></button>
     </div>
     <nav class="nav" id="main-nav" aria-label="Ana menü">
       <a href="#/" data-nav="home">Keşfet</a>
@@ -72,7 +72,8 @@
   <button class="text-btn trailer-close" type="button" id="trailer-close">Kapat</button>
 </dialog>
 
+<nav class="bottom-nav" id="bottom-nav" aria-label="Alt menü"></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="/src/main.js?v=7"></script>
+<script type="module" src="/src/main.js?v=9"></script>
 </body>
 </html>

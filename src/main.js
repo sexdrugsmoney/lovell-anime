@@ -22,13 +22,21 @@ let library = new Set();                    // "kind:id" anahtarları (bilgisaya
 let libraryEpisodes = new Map();            // "kind:id" -> Set("s:e")
 
 function inList(a) { return myList.some(x => keyOf(x) === keyOf(a)); }
-function toggleList(a) {
+function toggleList(a, {quiet = false} = {}) {
   const had = inList(a);
+  const at = myList.findIndex(x => keyOf(x) === keyOf(a));
   myList = had ? myList.filter(x => keyOf(x) !== keyOf(a)) : [slim(a), ...myList];
   store.set('list', myList);
   updateCount();
-  toast(had ? 'Listeden çıkarıldı' : 'Listeye eklendi');
+  syncBottomNav();
+  syncListButtons(a);
+  if (!quiet) toast(had ? 'Listeden çıkarıldı' : 'Listeye eklendi', had ? 'info' : 'success', had ? {label: 'Geri al', fn: () => { if (!inList(a)) { myList.splice(Math.max(0, at), 0, slim(a)); store.set('list', myList); updateCount(); syncListButtons(a); if (/^#\/listem/.test(location.hash)) route(); } }} : null);
   return !had;
+}
+// Sayfadaki tüm "listeye ekle" düğmelerini (kartlar, vitrin, detay penceresi) aynı anda günceller.
+function syncListButtons(a) {
+  const on = inList(a), k = keyOf(a);
+  $$(`[data-list="${k}"]`).forEach(b => { b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); b.setAttribute('aria-label', on ? 'Listeden çıkar' : 'Listeye ekle'); if (b.dataset.label) b.innerHTML = on ? CHECK + 'Listende' : PLUS + b.dataset.label; else b.innerHTML = on ? CHECK : PLUS; });
 }
 function updateCount() {
   const c = $('#list-count');
@@ -71,6 +79,7 @@ function setSection(next) {
   $('meta[name="theme-color"]')?.setAttribute('content', S().color);
   $('#foot-section') && ($('#foot-section').textContent = section === 'anime' ? 'Anime bilgileri TMDB ve AniList’ten gelir.' : 'Film ve dizi bilgileri TMDB’den gelir.');
   updateCount();
+  if (typeof syncBottomNav === 'function') syncBottomNav();
 }
 const withSection = path => path + (path.includes('?') ? '&' : '?') + 'section=' + section;
 
@@ -147,13 +156,15 @@ function saveProgress(a, s, e, t, d) {
 
 // ---------------- Yardımcılar ----------------
 let toastTimer;
-function toast(msg, type = 'info') {
+function toast(msg, type = 'info', action = null) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.innerHTML = `<span class="toast-ico" aria-hidden="true">${type === 'success' ? CHECK : type === 'error' ? '<svg class="ln" viewBox="0 0 16 16"><path d="M8 4v5M8 11.5v.5"/></svg>' : '<svg class="ln" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.5"/><path d="M8 7v4M8 5v.2"/></svg>'}</span><span>${esc(msg)}</span>${action ? `<button type="button" class="toast-act">${esc(action.label)}</button>` : ''}`;
   t.dataset.type = type;
-  t.classList.add('show');
+  t.classList.toggle('has-act', !!action);
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+  if (action) $('.toast-act', t).onclick = () => { action.fn(); t.classList.remove('show'); };
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => t.classList.remove('show'), action ? 5000 : 2600);
 }
 const apiCache = new Map(); // path -> {data, expires}
 const CACHE_TTL = {
@@ -189,6 +200,8 @@ const STAR = '<svg class="star" viewBox="0 0 12 12" aria-hidden="true"><path d="
 const PLAY = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2.5v11l9.5-5.5z"/></svg>';
 const PLUS = '<svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>';
 const CHECK = '<svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="m3 8.5 3.2 3L13 4.5"/></svg>';
+const SHUFFLE = '<svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4.5h2.5c3 0 4 7 7 7H14M2 11.5h2.5c1.3 0 2.2-1.3 3-2.8M10 5.3c.4-.5 1-.8 1.5-.8H14M12 2.5l2 2-2 2M12 9.5l2 2-2 2"/></svg>';
+const INFO = '<svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 7.2V11M8 4.8v.2"/></svg>';
 
 function imgFallback(root = document) {
   $$('img[data-fb]', root).forEach(img => {
@@ -201,39 +214,46 @@ function imgFallback(root = document) {
 // ---------------- Bileşenler ----------------
 const kindLabel = a => isMovie(a) ? 'Film' : secOf(a) === 'anime' ? 'Seri' : 'Dizi';
 // Dikey afiş kartı (anime bölümünün varsayılanı)
+const ITEMS = new Map(); // "kind:id" -> öğe (hızlı eylemler ve detay penceresi için)
+const remember = a => (a && ITEMS.set(keyOf(a), a), a);
+const quickActs = (a, cls = '') => `<span class="qa ${cls}"><span class="qa-btn ${inList(a) ? 'on' : ''}" role="button" tabindex="-1" data-list="${keyOf(a)}" aria-pressed="${inList(a)}" aria-label="${inList(a) ? 'Listeden çıkar' : 'Listeye ekle'}">${inList(a) ? CHECK : PLUS}</span><span class="qa-btn" role="button" tabindex="-1" data-info="${keyOf(a)}" aria-label="Ayrıntılar">${INFO}</span></span>`;
 function card(a) {
+  remember(a);
   const local = library.has(keyOf(a));
   return `<a class="card" href="${watchHref(a)}">
-    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${local ? '<span class="flag" title="Bilgisayarında video dosyası var">Dosyan var</span>' : ''}${a.score ? `<span class="card-score">${STAR}${score(a.score)}</span>` : ''}<span class="card-hover">${PLAY}</span></span>
+    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${local ? '<span class="flag" title="Bilgisayarında video dosyası var">Dosyan var</span>' : ''}${a.score ? `<span class="card-score">${STAR}${score(a.score)}</span>` : ''}<span class="card-hover">${PLAY}</span>${quickActs(a)}</span>
     <span class="card-title">${esc(a.title)}</span>
     <span class="card-meta"><span>${esc(a.year || '')}</span><span class="kind">${kindLabel(a)}</span></span>
   </a>`;
 }
 // Yatay 16:9 kart (Film & Dizi bölümünün varsayılanı) — başlık görselin üstünde
 function landCard(a) {
+  remember(a);
   const img = a.backdrop || a.poster;
   return `<a class="land" href="${watchHref(a)}">
     <span class="land-img">${img ? `<img src="${esc(img)}" alt="" loading="lazy" decoding="async" data-fb class="${a.backdrop ? '' : 'is-poster'}">` : ''}<span class="land-ph">${esc(a.title)}</span>
       <span class="land-shade"></span>
       <span class="land-body"><span class="land-title">${esc(a.title)}</span>
         <span class="land-meta">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}<span>${esc(a.year || '')}</span><span class="kind">${kindLabel(a)}</span></span></span>
-      <span class="land-play">${PLAY}</span>
+      <span class="land-play">${PLAY}</span>${quickActs(a, 'qa-land')}
     </span>
   </a>`;
 }
 // İlk 10 kartı: büyük numara + afiş
 function rankCard(a, i) {
+  remember(a);
   return `<a class="rank" href="${watchHref(a)}" aria-label="${i + 1}. ${esc(a.title)}">
     <span class="rank-n" aria-hidden="true">${i + 1}</span>
-    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span></span>
+    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${quickActs(a)}</span>
   </a>`;
 }
 const gridCard = a => section === 'media' ? landCard(a) : card(a);
 function wideCard(r) {
   const a = r.item, p = progress[`${keyOf(a)}:${r.s}:${r.e}`];
   const pct = p ? Math.min(100, p.t / p.d * 100) : 0;
+  remember(a);
   return `<a class="wide" href="${watchHref(a, r.s, r.e)}">
-    <span class="wide-img">${a.backdrop || a.poster ? `<img src="${esc(a.backdrop || a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="wide-play">${PLAY}</span></span>
+    <span class="wide-img">${a.backdrop || a.poster ? `<img src="${esc(a.backdrop || a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="wide-play">${PLAY}</span><span class="qa-btn qa-forget" role="button" tabindex="-1" data-forget="${keyOf(a)}" aria-label="Bu satırdan kaldır"><svg class="ln" viewBox="0 0 16 16"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></span>
     <span class="bar"><i style="width:${pct}%"></i></span>
     <span class="card-title">${esc(a.title)}</span>
     <span class="card-meta">${isMovie(a) ? 'Film' : `${r.s}. sezon, ${r.e}. bölüm`}${p ? ` <span>${fmtTime(p.d - p.t)} kaldı</span>` : ''}</span>
@@ -328,12 +348,14 @@ function bindHero(items) {
       <h1 class="hero-title">${esc(a.title)}</h1>
       <p class="hero-meta">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}<span>${esc(a.year)}</span>${anime ? '' : `<span>${kindLabel(a)}</span>`}${a.genres?.length ? `<span>${esc(a.genres.slice(0, 3).join(' · '))}</span>` : ''}</p>
       <p class="hero-text">${esc(a.overview)}</p>
-      <div class="actions"><a class="btn btn-play" href="${watchHref(a)}">${PLAY}${anime ? 'İzlemeye başla' : 'Oynat'}</a><button class="btn btn-ghost" data-save>${inList(a) ? CHECK + 'Listende' : PLUS + (anime ? 'Listeye ekle' : 'Listem')}</button></div>`;
+      <div class="actions"><a class="btn btn-play" href="${watchHref(a)}">${PLAY}${anime ? 'İzlemeye başla' : 'Oynat'}</a><button class="btn btn-ghost" data-save data-list="${keyOf(a)}" data-label="${anime ? 'Listeye ekle' : 'Listem'}">${inList(a) ? CHECK + 'Listende' : PLUS + (anime ? 'Listeye ekle' : 'Listem')}</button><button class="btn btn-ghost btn-info" type="button" data-info="${keyOf(a)}" aria-label="Daha fazla bilgi">${INFO}<span>Daha fazla bilgi</span></button></div>`;
+    remember(a);
+    ambientFrom(a.backdrop || a.poster, hero);
     const jp = $('.hero-native', hero);
     if (jp) { jp.textContent = native; jp.hidden = !native; }
     const pc = $('.hero-poster', hero);
     if (pc) pc.innerHTML = anime && a.poster ? `<img src="${esc(a.posterLarge || a.poster)}" alt="" data-fb>` : '';
-    $('[data-save]', hero).onclick = e => { const on = toggleList(a); e.currentTarget.innerHTML = on ? CHECK + 'Listende' : PLUS + 'Listeye ekle'; };
+    $('[data-save]', hero).onclick = e => { e.stopPropagation(); toggleList(a); };
     $$('.thumb', hero).forEach((t, k) => { t.setAttribute('aria-selected', k === i); t.classList.toggle('on', k === i); });
     imgFallback(hero);
     clearTimeout(heroTimer);
@@ -405,6 +427,7 @@ async function viewBrowse(v, kind, params) {
   main.innerHTML = `<div class="page page-browse tab-content-enter">
     <header class="page-head">
       <div><p class="eyebrow">${esc(S().label)}</p><h1>${esc(gName ? `${gName} ${kind === 'movie' ? (media ? 'filmleri' : 'anime filmleri') : (media ? 'dizileri' : 'animeleri')}` : S()[kind])}</h1></div>
+      <button class="btn btn-ghost btn-sm shuffle-btn" id="shuffle" type="button" title="Bu sayfadaki başlıklardan birini rastgele aç">${SHUFFLE}Rastgele seç</button>
       <div class="kind-switch" role="tablist" aria-label="Tür">
         <a role="tab" href="${kind === 'tv' ? '#' : other}" aria-selected="${kind === 'tv'}" class="${kind === 'tv' ? 'on' : ''}" ${kind === 'tv' ? 'data-noop' : ''}>${media ? 'Diziler' : 'Seriler'}</a>
         <a role="tab" href="${kind === 'movie' ? '#' : other}" aria-selected="${kind === 'movie'}" class="${kind === 'movie' ? 'on' : ''}" ${kind === 'movie' ? 'data-noop' : ''}>Filmler</a>
@@ -418,6 +441,7 @@ async function viewBrowse(v, kind, params) {
     <div class="more-wrap" id="more-wrap">${loading()}</div>
   </div>`;
   $$('[data-noop]').forEach(a => a.onclick = e => e.preventDefault());
+  bindShuffle();
   $('#sort').onchange = e => location.hash = link({sirala: e.target.value});
   $('.filter-search').onsubmit = e => { e.preventDefault(); location.hash = link({ara: e.target.ara.value.trim()}); };
   let page = 1;
@@ -475,13 +499,19 @@ function listGroups(items) {
   if (!tv.length || !mv.length) return grid(items);
   return [[section === 'anime' ? 'Seriler' : 'Diziler', tv], ['Filmler', mv]].map(([t, l]) => `<section class="list-group"><h2 class="list-group-head">${t}<small>${l.length}</small></h2>${grid(l)}</section>`).join('');
 }
+const LIST_SORTS = [['added', 'Son eklenen'], ['title', 'Ada göre'], ['score', 'Puana göre'], ['year', 'Yıla göre']];
 function viewList() {
+  const sortBy = store.get('listSort', 'added');
+  const cmp = {title: (x, y) => x.title.localeCompare(y.title, 'tr'), score: (x, y) => (y.score || 0) - (x.score || 0), year: (x, y) => String(y.year || '').localeCompare(String(x.year || ''))}[sortBy];
   const mine = myList.filter(a => secOf(a) === section);
+  if (cmp) mine.sort(cmp);
   const others = myList.length - mine.length;
   const otherName = SECTIONS[section === 'anime' ? 'media' : 'anime'].label;
-  main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${esc(S().label)}</p><h1>Listem</h1></div>${mine.length ? `<p>${mine.length} başlık. Liste bu tarayıcıda saklanır.${others ? ` ${otherName} listende ${others} başlık daha var.` : ''}</p>` : ''}</header>
+  main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${esc(S().label)}</p><h1>Listem</h1></div>${mine.length ? `<div class="head-tools"><label class="select">Sırala <select id="list-sort">${LIST_SORTS.map(([k, t]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${t}</option>`).join('')}</select></label><button class="btn btn-ghost btn-sm" id="shuffle" type="button">${SHUFFLE}Rastgele seç</button></div><p>${mine.length} başlık. Liste bu tarayıcıda saklanır; kartın üzerindeki işaretle çıkarabilirsin.${others ? ` ${otherName} listende ${others} başlık daha var.` : ''}</p>` : ''}</header>
     ${mine.length ? listGroups(mine) : `<div class="state"><h2>Listen boş</h2><p>${S().empty}${others ? ` ${otherName} listende ${others} başlık var.` : ''}</p><a class="btn" href="#/kesfet">${section === 'anime' ? 'Serilere göz at' : 'Dizilere göz at'}</a></div>`}
   </div>`;
+  if ($('#list-sort')) $('#list-sort').onchange = e => { store.set('listSort', e.target.value); viewList(); };
+  bindShuffle();
   imgFallback();
   observeCards();
 }
@@ -539,10 +569,15 @@ async function viewWatch(v, kind, id, params) {
   const ctx = {a, s, e, episodes: [], v};
 
   main.innerHTML = `<div class="watch">
-    <div class="cinema">
+    <div class="cinema ${store.get('theater', false) ? 'theater' : ''}" id="cinema">
+      <div class="cinema-tools">
+        <button class="cine-btn" id="theater" type="button" aria-pressed="${store.get('theater', false)}" title="Sinema modu (T)"><svg class="ln" viewBox="0 0 20 20" aria-hidden="true"><rect x="2" y="5" width="16" height="10" rx="1.5"/><path d="M6 8v4M14 8v4"/></svg><span>Sinema modu</span></button>
+        ${movie ? '' : '<button class="cine-btn" id="panel-toggle" type="button" title="Bölüm listesi"><svg class="ln" viewBox="0 0 20 20" aria-hidden="true"><path d="M4 5h12M4 10h12M4 15h8"/></svg><span>Bölümler</span></button>'}
+      </div>
       <div class="stage" id="stage"><div class="stage-inner">${loading('Video aranıyor')}</div></div>
       ${movie ? '' : `<aside class="cinema-panel" id="episodes" aria-label="Bölüm listesi">
         <div class="cinema-panel-head"><span class="eyebrow">Bölümler</span><strong>${a.episodeCount || ''}</strong></div>
+        <label class="ep-find"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="ep-find" type="search" inputmode="search" placeholder="Bölüm no ya da adı" aria-label="Bölüm ara"></label>
         <div class="ep-tools">
           ${seasons.length > 1 ? `<label class="select">Sezon <select id="season">${seasons.map(x => `<option value="${x.n}" ${x.n === s ? 'selected' : ''}>${x.n}. sezon</option>`).join('')}</select></label>` : ''}
           <span id="range-slot"></span>
@@ -558,6 +593,7 @@ async function viewWatch(v, kind, id, params) {
           ${a.original && a.original !== a.title ? `<p class="original" ${section === 'anime' ? 'lang="ja"' : ''}>${esc(a.original)}</p>` : ''}
           <p class="facts">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}${a.imdbRating ? `<span class="imdb-score" title="IMDb puanı"><svg viewBox="0 0 32 16" width="32" height="16" aria-hidden="true"><rect width="32" height="16" rx="3" fill="#F5C518"/><text x="4" y="12" font-size="10" font-weight="bold" fill="#000">IMDb</text></svg> ${esc(a.imdbRating)}</span>` : ''}${a.rottenTomatoes ? `<span title="Rotten Tomatoes" class="badge-rt"><b>RT</b>${esc(a.rottenTomatoes)}</span>` : ''}${a.metascore ? `<span title="Metascore" class="metascore">${esc(a.metascore)}</span>` : ''}${a.awards ? `<span title="${esc(a.awards)}" class="awards-badge"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v3a4 4 0 0 1-8 0zM4 3H2v1a2 2 0 0 0 2 2M12 3h2v1a2 2 0 0 1-2 2M8 9v3M5 14h6"/></svg>Ödüllü</span>` : ''}${a.boxOffice ? `<span title="Gişe" class="badge-box">Gişe ${esc(a.boxOffice)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}${movie ? `<span>Film${a.runtime ? `, ${a.runtime} dk` : ''}</span>` : a.episodeCount ? `<span>${a.episodeCount} bölüm</span>` : ''}${a.genres?.length ? `<span>${esc(a.genres.join(', '))}</span>` : ''}${a.studios?.length ? `<span>${esc(a.studios.join(', '))}</span>` : ''}</p>
           ${a.overview ? `<div class="overview" id="overview"><p>${esc(a.overview).replace(/\n+/g, '</p><p>')}</p></div>${a.overviewLang === 'en' ? '<p class="note">Türkçe özet bulunamadı, İngilizcesi gösteriliyor.</p>' : ''}` : ''}
+          ${movie ? '' : '<div class="ep-nav" id="ep-nav" hidden></div>'}
           <div class="actions">
             <button class="btn ${inList(a) ? 'btn-ghost' : ''}" id="save">${inList(a) ? CHECK + 'Listende' : PLUS + 'Listeye ekle'}</button>
             ${a.trailer ? `<button class="btn btn-ghost" id="trailer">${PLAY}Fragman</button>` : ''}
@@ -573,6 +609,7 @@ async function viewWatch(v, kind, id, params) {
   $('#save').onclick = ev => { const on = toggleList(a); ev.currentTarget.innerHTML = on ? CHECK + 'Listende' : PLUS + 'Listeye ekle'; ev.currentTarget.classList.toggle('btn-ghost', on); };
   if ($('#trailer')) $('#trailer').onclick = () => openTrailer(a.trailer);
   if ($('#season')) $('#season').onchange = ev => go(ctx, Number(ev.target.value), 1);
+  bindWatchExtras(ctx);
   bindShelves();
   imgFallback();
   setStatus(a.source);
@@ -603,6 +640,7 @@ async function loadEpisodes(ctx) {
   ctx.episodes = d.episodes || [];
   renderEpisodes(ctx, Math.floor(Math.max(0, ctx.episodes.findIndex(x => x.n === ctx.e)) / 50));
   updateNow(ctx);
+  updateEpNav(ctx);
 }
 function renderEpisodes(ctx, page = 0) {
   const list = $('#ep-list');
@@ -919,14 +957,14 @@ $('#trailer-dialog').addEventListener('click', e => { if (e.target.id === 'trail
 // ---------------- Arama ----------------
 const sd = $('#search-dialog'), si = $('#search-input'), sr = $('#search-results');
 let searchSeq = 0, searchTimer;
-function openSearch() { sd.showModal(); si.select(); if (!si.value) sr.innerHTML = '<p class="muted pad">En az iki harf yaz.</p>'; }
+function openSearch() { sd.showModal(); si.select(); if (si.value.trim().length < 2) searchIdle(); }
 $('#search-open').onclick = openSearch;
 $('#search-close').onclick = () => sd.close();
 sd.addEventListener('click', e => { if (e.target === sd) sd.close(); });
 si.addEventListener('input', () => {
   clearTimeout(searchTimer);
   const q = si.value.trim(), seq = ++searchSeq;
-  if (q.length < 2) { sr.innerHTML = '<p class="muted pad">En az iki harf yaz.</p>'; return; }
+  if (q.length < 2) { searchIdle(); return; }
   sr.innerHTML = loading('Aranıyor');
   searchTimer = setTimeout(async () => {    try {
       const d = await api(withSection(`/api/search?q=${encodeURIComponent(q)}`));
@@ -937,7 +975,7 @@ si.addEventListener('input', () => {
           <span><strong>${esc(a.title)}</strong><small>${[a.year, kindLabel(a), a.score ? score(a.score) + ' puan' : ''].filter(Boolean).join(', ')}</small></span></a>`;
       // Sonuçlar dizi / film olarak gruplanır.
       const tvR = top.filter(a => !isMovie(a)), mvR = top.filter(isMovie);
-      sr.innerHTML = top.length ? [[section === 'anime' ? 'Seriler' : 'Diziler', tvR], ['Filmler', mvR]].filter(([, l]) => l.length).map(([t, l]) => `<p class="result-group">${t}<small>${l.length}</small></p>${l.map(row).join('')}`).join('')
+      sr.innerHTML = top.length ? [[section === 'anime' ? 'Seriler' : 'Diziler', tvR], ['Filmler', mvR]].filter(([, l]) => l.length).map(([t, l]) => `<p class="result-group">${t}<small>${l.length}</small></p>${l.map(row).join('')}`).join('') + `<a class="result-all" href="#/kesfet?ara=${encodeURIComponent(q)}">“${esc(q)}” için tüm sonuçları gör</a>`
         : `<p class="muted pad">“${esc(q)}” için ${esc(S().label)} bölümünde sonuç yok. ${section === 'anime' ? 'Japonca ya da İngilizce adını dene, ya da Film & Dizi bölümünde ara.' : 'Orijinal adını dene; anime arıyorsan Anime bölümüne geç.'}</p>`;
       imgFallback(sr);
     } catch (e) { if (seq === searchSeq) sr.innerHTML = `<p class="muted pad">Arama yapılamadı: ${esc(e.message)}</p>`; }
@@ -954,7 +992,12 @@ sr.addEventListener('keydown', e => {
   if (e.key === 'ArrowDown') { e.preventDefault(); items[Math.min(items.length - 1, i + 1)]?.focus(); }
   if (e.key === 'ArrowUp') { e.preventDefault(); i <= 0 ? si.focus() : items[i - 1].focus(); }
 });
-sr.addEventListener('click', e => { if (e.target.closest('a')) sd.close(); });
+sr.addEventListener('click', e => {
+  const chip = e.target.closest('[data-q]');
+  if (chip) { si.value = chip.dataset.q; si.dispatchEvent(new Event('input')); si.focus(); return; }
+  if (e.target.closest('[data-clear-recent]')) { store.set('searches', []); searchIdle(); return; }
+  if (e.target.closest('a')) { rememberSearch(si.value); sd.close(); }
+});
 document.addEventListener('keydown', e => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName);
   if ((e.key === '/' && !typing) || ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k')) { e.preventDefault(); openSearch(); }
@@ -1213,6 +1256,323 @@ function openLiveChannel(url, name, logo, group = '') {
   }
 }
 
+// =====================================================================
+// GELİŞMİŞ ARAYÜZ (v9): detay penceresi, ortam ışığı, alt menü, kısayollar
+// =====================================================================
+
+// ---- Ortam ışığı: görselin baskın rengini çıkarıp çevresine yayar ----
+const ambientCache = new Map();
+function ambientColor(url) {
+  // Yalnızca aynı kaynaktan gelen görseller okunabilir (/api/img ve /public).
+  if (!url || !/^\/(api|public)\//.test(url)) return Promise.resolve(null);
+  if (ambientCache.has(url)) return ambientCache.get(url);
+  const p = new Promise(res => {
+    const img = new Image();
+    img.decoding = 'async';
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas'); c.width = 24; c.height = 14;
+        const g = c.getContext('2d', {willReadFrequently: true});
+        g.drawImage(img, 0, 0, 24, 14);
+        const d = g.getImageData(0, 0, 24, 14).data;
+        let r = 0, gg = 0, b = 0, w = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+          const wt = 1 + (mx - mn) / 32 + (mx > 30 && mx < 235 ? 1 : 0); // canlı renklere ağırlık ver
+          r += d[i] * wt; gg += d[i + 1] * wt; b += d[i + 2] * wt; w += wt;
+        }
+        // Rengi biraz doyur ve parlaklığı orta seviyeye çek.
+        let [h, sat, l] = rgb2hsl(r / w, gg / w, b / w);
+        sat = Math.max(sat, .45); l = Math.min(Math.max(l, .38), .55);
+        res(hsl2rgb(h, sat, l).map(Math.round).join(' '));
+      } catch { res(null); }
+    };
+    img.onerror = () => res(null);
+    img.src = url;
+  });
+  ambientCache.set(url, p);
+  return p;
+}
+function rgb2hsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const mx = Math.max(r, g, b), mn = Math.min(r, g, b), l = (mx + mn) / 2;
+  if (mx === mn) return [0, 0, l];
+  const d = mx - mn, s = l > .5 ? d / (2 - mx - mn) : d / (mx + mn);
+  const h = mx === r ? (g - b) / d + (g < b ? 6 : 0) : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [h / 6, s, l];
+}
+function hsl2rgb(h, s, l) {
+  const f = n => { const k = (n + h * 12) % 12, a = s * Math.min(l, 1 - l); return 255 * (l - a * Math.max(-1, Math.min(k - 3, 9 - k, 1))); };
+  return [f(0), f(8), f(4)];
+}
+async function ambientFrom(url, el) {
+  const c = await ambientColor(url);
+  if (c && el && document.contains(el)) el.style.setProperty('--amb', c);
+}
+
+// ---- Görseller yüklenince yumuşakça belirir ----
+document.addEventListener('load', e => { if (e.target.tagName === 'IMG') e.target.classList.add('ld'); }, true);
+
+// ---- Kartlardaki hızlı eylemler (listeye ekle, ayrıntılar, devam et satırından kaldır) ----
+document.addEventListener('click', e => {
+  const el = e.target.closest?.('.qa-btn[data-list], [data-info], [data-forget]');
+  if (!el) return;
+  e.preventDefault(); e.stopPropagation();
+  if (el.dataset.info) return openInfo(el.dataset.info);
+  if (el.dataset.list) { const a = ITEMS.get(el.dataset.list) || myList.find(x => keyOf(x) === el.dataset.list); if (a) toggleList(a); return; }
+  if (el.dataset.forget) {
+    const k = el.dataset.forget, saved = recent[k];
+    delete recent[k]; store.set('recent', recent);
+    const cardEl = el.closest('.wide');
+    cardEl?.classList.add('leaving');
+    setTimeout(() => { const row = cardEl?.closest('.shelf'); cardEl?.remove(); if (row && !$('.wide', row)) row.remove(); }, reduceMotion ? 0 : 260);
+    toast('Devam et satırından kaldırıldı', 'info', {label: 'Geri al', fn: () => { recent[k] = saved; store.set('recent', recent); route(); }});
+  }
+}, true);
+
+// ---- Rastgele seç ----
+function bindShuffle() {
+  const b = $('#shuffle');
+  if (!b) return;
+  b.onclick = () => {
+    const links = $$('#main .grid a[href^="#/izle"]');
+    if (!links.length) return toast('Seçilecek başlık yok');
+    const pick = links[Math.floor(Math.random() * links.length)];
+    pick.scrollIntoView({block: 'center', behavior: reduceMotion ? 'auto' : 'smooth'});
+    pick.classList.add('picked');
+    setTimeout(() => { location.hash = pick.getAttribute('href'); }, reduceMotion ? 0 : 650);
+  };
+}
+
+// ---- Detay penceresi (Netflix'teki "Daha fazla bilgi") ----
+let qvSeq = 0;
+function closeInfo(silent) {
+  const d = $('#qv');
+  if (d?.open) { silent ? d.close() : d.classList.add('closing'); if (silent) d.classList.remove('closing'); else setTimeout(() => { d.close(); d.classList.remove('closing'); }, reduceMotion ? 0 : 180); }
+}
+async function openInfo(key) {
+  const [kind, id] = String(key).split(':');
+  if (!/^(tv|movie|al)$/.test(kind) || !/^\d+$/.test(id)) return;
+  let d = $('#qv');
+  if (!d) {
+    d = document.createElement('dialog');
+    d.id = 'qv'; d.className = 'qv';
+    d.setAttribute('aria-label', 'Ayrıntılar');
+    document.body.append(d);
+    d.addEventListener('click', e => { if (e.target === d) closeInfo(); });
+    d.addEventListener('cancel', e => { e.preventDefault(); closeInfo(); });
+  }
+  const seq = ++qvSeq;
+  const seed = ITEMS.get(key) || {kind, id: Number(id), title: ''};
+  const draw = (a, full) => {
+    const movie = isMovie(a);
+    const seasons = a.seasons?.length ? a.seasons : [];
+    d.innerHTML = `<article class="qv-card">
+      <button class="qv-close icon-btn" type="button" aria-label="Kapat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
+      <div class="qv-banner">${a.backdrop || a.poster ? `<img src="${esc(a.backdrop || a.posterLarge || a.poster)}" alt="" data-fb>` : ''}<span class="qv-shade"></span>
+        <div class="qv-head">
+          <h2 class="qv-title">${esc(a.title)}</h2>
+          <div class="actions">
+            <a class="btn btn-play" href="${watchHref(a)}">${PLAY}${secOf(a) === 'anime' ? 'İzlemeye başla' : 'Oynat'}</a>
+            <button class="btn btn-ghost" type="button" data-list="${keyOf(a)}" data-label="Listeye ekle" data-qv-list>${inList(a) ? CHECK + 'Listende' : PLUS + 'Listeye ekle'}</button>
+            ${a.trailer ? `<button class="btn btn-ghost" type="button" data-qv-trailer>${PLAY}Fragman</button>` : ''}
+          </div>
+        </div>
+      </div>
+      <div class="qv-body">
+        <div class="qv-main">
+          <p class="qv-facts">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}<span class="kind-pill">${kindLabel(a)}</span>${movie ? (a.runtime ? `<span>${a.runtime} dk</span>` : '') : a.episodeCount ? `<span>${a.episodeCount} bölüm</span>` : seasons.length ? `<span>${seasons.length} sezon</span>` : ''}</p>
+          ${full ? (a.overview ? `<p class="qv-text">${esc(a.overview)}</p>` : '<p class="qv-text muted">Bu başlık için özet yok.</p>') : '<p class="qv-text"><span class="skeleton" style="height:14px;width:92%"></span><span class="skeleton" style="height:14px;width:80%;margin-top:8px"></span><span class="skeleton" style="height:14px;width:60%;margin-top:8px"></span></p>'}
+        </div>
+        <dl class="qv-side">
+          ${a.genres?.length ? `<div><dt>Türler</dt><dd>${a.genres.map(g => `<span>${esc(g)}</span>`).join('')}</dd></div>` : ''}
+          ${a.studios?.length ? `<div><dt>${secOf(a) === 'anime' ? 'Stüdyo' : 'Yapım'}</dt><dd>${esc(a.studios.join(', '))}</dd></div>` : ''}
+          ${a.original && a.original !== a.title ? `<div><dt>Orijinal adı</dt><dd>${esc(a.original)}</dd></div>` : ''}
+        </dl>
+      </div>
+      ${full && !movie && seasons.length ? `<section class="qv-eps"><div class="qv-sec-head"><h3>Bölümler</h3>${seasons.length > 1 ? `<label class="select"><select id="qv-season" aria-label="Sezon">${seasons.map(x => `<option value="${x.n}">${x.n}. sezon${x.count ? ` (${x.count} bölüm)` : ''}</option>`).join('')}</select></label>` : ''}</div><ol class="qv-ep-list" id="qv-eps">${loading('Bölümler yükleniyor')}</ol></section>` : ''}
+      ${full && a.recommendations?.length ? `<section class="qv-recs"><div class="qv-sec-head"><h3>Benzerleri</h3></div><div class="qv-rec-grid">${a.recommendations.slice(0, 9).map(r => { remember(r); return `<a class="qv-rec" href="${watchHref(r)}"><span class="qv-rec-img">${r.backdrop || r.poster ? `<img src="${esc(r.backdrop || r.poster)}" alt="" loading="lazy" data-fb>` : ''}<span class="qv-rec-t">${esc(r.title)}</span></span><span class="qv-rec-meta">${r.score ? `<span class="score">${STAR}${score(r.score)}</span>` : ''}<span>${esc(r.year || '')}</span><span class="qa-btn ${inList(r) ? 'on' : ''}" role="button" tabindex="0" data-list="${keyOf(r)}" aria-label="Listeye ekle">${inList(r) ? CHECK : PLUS}</span></span></a>`; }).join('')}</div></section>` : ''}
+    </article>`;
+    $('.qv-close', d).onclick = () => closeInfo();
+    $('[data-qv-list]', d).onclick = e => { e.stopPropagation(); toggleList(a); };
+    const tr = $('[data-qv-trailer]', d);
+    if (tr) tr.onclick = () => { closeInfo(true); openTrailer(a.trailer); };
+    imgFallback(d);
+    ambientFrom(a.backdrop || a.poster, d);
+    if (full && $('#qv-eps', d)) {
+      const loadEps = async sn => {
+        const list = $('#qv-eps', d);
+        list.innerHTML = loading('Bölümler yükleniyor');
+        let r; try { r = await api(`/api/episodes/${a.kind}/${a.id}?season=${sn}`); } catch { r = {episodes: []}; }
+        if (seq !== qvSeq || !document.contains(list)) return;
+        const eps = r.episodes || [];
+        list.innerHTML = eps.length ? eps.slice(0, 60).map(ep => {
+          const pr = progress[`${keyOf(a)}:${sn}:${ep.n}`], pct = pr ? Math.min(100, pr.t / pr.d * 100) : 0;
+          return `<li><a href="${watchHref(a, sn, ep.n)}" class="qv-ep ${ep.still ? '' : 'no-still'}"><span class="qv-ep-n">${ep.n}</span>${ep.still ? `<span class="qv-ep-img"><img src="${esc(ep.still)}" alt="" loading="lazy" data-fb>${pct ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}</span>` : ''}<span class="qv-ep-body"><strong>${esc(ep.title)}</strong>${ep.overview ? `<span>${esc(ep.overview)}</span>` : ''}</span>${ep.runtime ? `<span class="qv-ep-rt">${ep.runtime} dk</span>` : ''}</a></li>`;
+        }).join('') + (eps.length > 60 ? `<li class="qv-more"><a class="text-btn" href="${watchHref(a, sn, 61)}">Tüm ${eps.length} bölümü izleme sayfasında gör</a></li>` : '') : '<li class="muted">Bölüm listesine şu an ulaşılamıyor.</li>';
+        imgFallback(list);
+      };
+      const last = recent[keyOf(a)];
+      const start = last?.s && seasons.some(x => x.n === last.s) ? last.s : seasons[0].n;
+      if ($('#qv-season', d)) { $('#qv-season', d).value = start; $('#qv-season', d).onchange = e => loadEps(Number(e.target.value)); }
+      loadEps(start);
+    }
+  };
+  draw(seed, false);
+  if (!d.open) d.showModal();
+  d.scrollTop = 0;
+  try {
+    const full = await api(`/api/title/${kind}/${id}`);
+    if (seq !== qvSeq || !d.open) return;
+    remember(full);
+    draw(full, true);
+  } catch (e) {
+    if (seq !== qvSeq) return;
+    $('.qv-text', d).outerHTML = `<p class="qv-text muted">Ayrıntılar yüklenemedi: ${esc(e.message)}</p>`;
+  }
+}
+
+// ---- Mobil alt menü ----
+function syncBottomNav(part = (location.hash.replace(/^#\/?/, '').split(/[/?]/)[0] || 'home')) {
+  const bar = $('#bottom-nav');
+  if (!bar) return;
+  const n = myList.filter(x => secOf(x) === section).length;
+  const items = [
+    ['home', '#/', S().nav.home, '<path d="M3 10.5 12 4l9 6.5V20h-6v-5H9v5H3z"/>'],
+    ['kesfet', '#/kesfet', S().nav.kesfet, '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/>'],
+    ['filmler', '#/filmler', section === 'anime' ? 'Filmler' : S().nav.filmler, '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 8h16M4 16h16M9 3v5M15 3v5M9 16v5M15 16v5"/>'],
+    ['ara', null, 'Ara', '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>'],
+    ['listem', '#/listem', 'Listem', '<path d="M6 3h12v18l-6-4-6 4z"/>'],
+  ];
+  bar.innerHTML = items.map(([k, href, label, icon]) => {
+    const inner = `<svg viewBox="0 0 24 24" aria-hidden="true">${icon}</svg><span>${esc(label)}</span>${k === 'listem' && n ? `<b>${n}</b>` : ''}`;
+    return href ? `<a href="${href}" ${k === part ? 'aria-current="page"' : ''}>${inner}</a>` : `<button type="button" data-bn-search>${inner}</button>`;
+  }).join('');
+  $('[data-bn-search]', bar).onclick = openSearch;
+}
+
+// ---- İzleme sayfası: sinema modu, bölüm arama, önceki / sonraki bölüm ----
+function bindWatchExtras(ctx) {
+  const cin = $('#cinema');
+  ambientFrom(ctx.a.backdrop || ctx.a.poster, cin);
+  $('#theater')?.addEventListener('click', () => {
+    const on = !cin.classList.contains('theater');
+    cin.classList.toggle('theater', on);
+    $('#theater').setAttribute('aria-pressed', String(on));
+    store.set('theater', on);
+    toast(on ? 'Sinema modu açık' : 'Sinema modu kapalı');
+  });
+  $('#panel-toggle')?.addEventListener('click', () => cin.classList.toggle('no-panel'));
+  const find = $('#ep-find');
+  if (find) find.addEventListener('input', () => {
+    const q = find.value.trim().toLocaleLowerCase('tr');
+    const eps = ctx.episodes;
+    if (!eps.length) return;
+    const match = ep => !q || String(ep.n) === q || ep.title.toLocaleLowerCase('tr').includes(q);
+    const first = eps.findIndex(match);
+    if (first < 0) { $$('#ep-list > li').forEach(li => li.hidden = true); return; }
+    const page = Math.floor(first / 50);
+    if (Number($('#range')?.value || 0) !== page) { renderEpisodes(ctx, page); if ($('#range')) $('#range').value = page; }
+    $$('#ep-list > li').forEach(li => { const n = Number(li.querySelector('.ep-n')?.textContent); const ep = eps.find(x => x.n === n); li.hidden = !!q && !(ep && match(ep)); });
+    if (/^\d+$/.test(q)) $(`#ep-list .ep[href*="&e=${q}"]`)?.scrollIntoView({block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth'});
+  });
+}
+function prevOf(ctx) {
+  const i = ctx.episodes.findIndex(x => x.n === ctx.e);
+  return i > 0 ? {s: ctx.s, e: ctx.episodes[i - 1].n} : null;
+}
+function updateEpNav(ctx) {
+  const nav = $('#ep-nav');
+  if (!nav) return;
+  const p = prevOf(ctx), n = nextOf(ctx);
+  const t = x => { const ep = x && x.s === ctx.s ? ctx.episodes.find(y => y.n === x.e) : null; return ep && !/^Bölüm \d+$/.test(ep.title) ? ep.title : ''; };
+  nav.hidden = !p && !n;
+  nav.innerHTML = `${p ? `<a class="ep-step prev" href="${watchHref(ctx.a, p.s, p.e)}"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg><span><small>Önceki bölüm</small>${p.s}. sezon ${p.e}. bölüm${t(p) ? ` · ${esc(t(p))}` : ''}</span></a>` : '<span></span>'}${n ? `<a class="ep-step next" href="${watchHref(ctx.a, n.s, n.e)}"><span><small>Sonraki bölüm</small>${n.s}. sezon ${n.e}. bölüm${t(n) ? ` · ${esc(t(n))}` : ''}</span><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></a>` : ''}`;
+}
+
+// ---- Arama: boşken son aramalar ve öne çıkanlar ----
+function rememberSearch(q) {
+  q = String(q || '').trim();
+  if (q.length < 2) return;
+  store.set('searches', [q, ...store.get('searches', []).filter(x => x.toLocaleLowerCase('tr') !== q.toLocaleLowerCase('tr'))].slice(0, 8));
+}
+async function searchIdle() {
+  const recentQ = store.get('searches', []);
+  const head = `${recentQ.length ? `<div class="search-idle"><p class="result-group">Son aramalar<button type="button" class="text-btn" data-clear-recent>Temizle</button></p><div class="search-chips">${recentQ.map(q => `<button type="button" class="chip" data-q="${esc(q)}"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3l2 1.5"/></svg>${esc(q)}</button>`).join('')}</div></div>` : ''}`;
+  sr.innerHTML = head + `<p class="result-group">${section === 'anime' ? 'Şu an popüler animeler' : 'Şu an popüler'}</p><div id="search-pop">${loading('')}</div>`;
+  try {
+    const d = await api(withSection('/api/home'));
+    const pop = $('#search-pop');
+    if (!pop || si.value.trim().length >= 2) return;
+    const items = (d.shelves?.find(x => x.layout === 'rank') || d.shelves?.[0])?.items?.slice(0, 6) || [];
+    pop.innerHTML = items.map((a, i) => `<a class="result" role="option" href="${watchHref(a)}" style="--d:${i * 30}ms"><span class="result-img thumb">${a.poster ? `<img src="${esc(a.poster)}" alt="" data-fb>` : ''}</span><span><strong>${esc(a.title)}</strong><small>${[a.year, kindLabel(a), a.score ? score(a.score) + ' puan' : ''].filter(Boolean).join(', ')}</small></span><span class="result-rank">${i + 1}</span></a>`).join('') || '<p class="muted pad">En az iki harf yaz.</p>';
+    imgFallback(pop);
+  } catch { const pop = $('#search-pop'); if (pop) pop.innerHTML = '<p class="muted pad">En az iki harf yaz.</p>'; }
+}
+
+// ---- Klavye kısayolları ----
+// Her satır: [tuş grupları ("|" ile ayrılır, "+" birlikte basılır), açıklama]
+const SHORTCUTS = [['/|Ctrl+K', 'Ara'], ['1|2|3', 'Anime, Film & Dizi, Canlı TV'], ['I', 'Vitrindeki başlığın ayrıntıları'], ['T', 'Sinema modu (izleme sayfasında)'], ['Shift+N|Shift+P', 'Sonraki, önceki bölüm'], ['Esc', 'Pencereyi kapat'], ['?', 'Bu listeyi göster']];
+function openShortcuts() {
+  let d = $('#keys');
+  if (!d) {
+    d = document.createElement('dialog');
+    d.id = 'keys'; d.className = 'keys';
+    d.setAttribute('aria-label', 'Klavye kısayolları');
+    d.innerHTML = `<div class="keys-card"><h2>Klavye kısayolları</h2><dl>${SHORTCUTS.map(([k, t]) => `<div><dt>${k.split('|').map(g => g.split('+').map(x => `<kbd>${esc(x)}</kbd>`).join('<i>+</i>')).join('<span>ya da</span>')}</dt><dd>${esc(t)}</dd></div>`).join('')}</dl><button class="btn btn-ghost btn-sm" type="button">Kapat</button></div>`;
+    document.body.append(d);
+    $('button', d).onclick = () => d.close();
+    d.addEventListener('click', e => { if (e.target === d) d.close(); });
+  }
+  d.showModal();
+}
+document.addEventListener('keydown', e => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
+  if (typing || e.ctrlKey || e.metaKey || e.altKey || $('dialog[open]')) return;
+  const watch = /^#\/izle\//.test(location.hash);
+  if (e.key === '?') { e.preventDefault(); openShortcuts(); }
+  else if (['1', '2', '3'].includes(e.key)) $(`.tab-btn[data-tab="${['anime', 'media', 'livetv'][Number(e.key) - 1]}"]`)?.click();
+  else if (e.key.toLowerCase() === 't' && watch) $('#theater')?.click();
+  else if (e.key.toLowerCase() === 'i' && !watch) $('.hero .btn-info')?.click();
+  else if (e.shiftKey && watch && (e.key === 'N' || e.key === 'P')) $(`#ep-nav .ep-step.${e.key === 'N' ? 'next' : 'prev'}`)?.click();
+});
+
+// ---- Yukarı çık düğmesi ----
+const toTop = document.createElement('button');
+toTop.className = 'to-top'; toTop.type = 'button'; toTop.setAttribute('aria-label', 'Sayfanın başına dön');
+toTop.innerHTML = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 14l6-6 6 6"/></svg>';
+toTop.onclick = () => window.scrollTo({top: 0, behavior: reduceMotion ? 'auto' : 'smooth'});
+document.body.append(toTop);
+addEventListener('scroll', () => toTop.classList.toggle('show', scrollY > 1400), {passive: true});
+
+// ---- Raflarda fareyle sürükleyerek kaydırma ----
+document.addEventListener('dragstart', e => { if (e.target.closest?.('.row')) e.preventDefault(); });
+document.addEventListener('pointerdown', e => {
+  if (e.pointerType !== 'mouse' || e.button !== 0) return;
+  const row = e.target.closest?.('.row');
+  if (!row || e.target.closest('.qa-btn')) return;
+  const x0 = e.clientX, s0 = row.scrollLeft;
+  let moved = false;
+  const move = ev => {
+    const dx = ev.clientX - x0;
+    if (!moved && Math.abs(dx) > 6) { moved = true; row.classList.add('dragging'); }
+    if (moved) row.scrollLeft = s0 - dx;
+  };
+  const up = () => {
+    removeEventListener('pointermove', move);
+    removeEventListener('pointerup', up);
+    if (moved) {
+      row.classList.remove('dragging');
+      // Sürükleme bitince tıklamayı yut, kart açılmasın.
+      const stop = ev => { ev.preventDefault(); ev.stopPropagation(); };
+      row.addEventListener('click', stop, {capture: true, once: true});
+      setTimeout(() => row.removeEventListener('click', stop, {capture: true}), 50);
+    }
+  };
+  addEventListener('pointermove', move);
+  addEventListener('pointerup', up);
+});
+
 // ---------------- Yönlendirme ----------------
 let routeId = 0;
 let _scrollIo = null; // viewBrowse sonsuz scroll observer — route değişiminde temizlenir
@@ -1233,6 +1593,8 @@ async function route() {
   const live = part === 'canli';
   document.documentElement.dataset.section = live ? 'livetv' : section;
   syncTabs(live ? 'livetv' : section);
+  syncBottomNav(part);
+  closeInfo(true);
   if (part === 'izle' && /^(tv|movie|al)$/.test(parts[1]) && /^\d+$/.test(parts[2])) await viewWatch(v, parts[1], parts[2], params);
   else if (live) await viewLiveTV(v);
   else if (part === 'kesfet') await viewBrowse(v, 'tv', params);
