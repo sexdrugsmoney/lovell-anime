@@ -341,7 +341,36 @@ async function api(url, env) {
       } catch { /* resolver timeout — embed ile devam */ }
     }
 
-    return json({sources: [...sources, ...vidRockSources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
+    // Anthology Scraper — Türkçe kaynaklar
+    let anthologySources = [];
+    if (env.ANTHOLOGY_SCRAPER_URL) {
+      try {
+        const antParams = new URLSearchParams({
+          tmdbId: id,
+          type: kind,
+          season: String(season),
+          episode: String(episode),
+        });
+        const antRes = await fetch(`${env.ANTHOLOGY_SCRAPER_URL}/api/all?${antParams}`, {
+          signal: AbortSignal.timeout(20000),
+          headers: {Accept: 'application/json'},
+        });
+        if (antRes.ok) {
+          const antData = await antRes.json().catch(() => ({}));
+          anthologySources = (antData.sources || []).filter(s => {
+            try { const u = new URL(s?.url); return u.protocol === 'https:'; } catch { return false; }
+          }).map(s => ({
+            name: s.name || 'Türkçe',
+            origin: 'anthology',
+            url: s.url,
+            type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
+            subtitles: s.subtitles || [],
+          }));
+        }
+      } catch { /* timeout — embed'lerle devam */ }
+    }
+
+    return json({sources: [...sources, ...vidRockSources, ...anthologySources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
   }
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);

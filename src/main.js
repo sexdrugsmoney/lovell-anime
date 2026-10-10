@@ -565,7 +565,7 @@ async function loadSources(ctx) {
   const alId = ctx.a.anilistId || '';
   $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar aranıyor…</div>`;
   try {
-    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`, 15000);
+    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`, 65000);
   } catch {
     d = {sources: [], embeds: [], folder: `${ctx.a.kind}-${ctx.a.id}`};
   }
@@ -933,6 +933,149 @@ function setStatus(source) {
   }).catch(() => {});
 }
 
+// ---------------- Canlı TV ----------------
+async function viewLiveTV(v) {
+  main.innerHTML = loading('Kanallar yükleniyor');
+  const M3U_URL = 'https://raw.githubusercontent.com/falsisdev/anthology/main/providers/M3U/Liste/canli.m3u';
+  let channels = [];
+  try {
+    const res = await fetch(M3U_URL, {signal: AbortSignal.timeout(15000)});
+    const text = await res.text();
+    channels = parseM3U(text);
+  } catch(e) {
+    if (v !== routeId) return;
+    main.innerHTML = errorBox(e, true);
+    return;
+  }
+  if (v !== routeId) return;
+  const groups = {};
+  channels.forEach(ch => {
+    const g = ch.group || 'Diğer';
+    if (!groups[g]) groups[g] = [];
+    groups[g].push(ch);
+  });
+  const groupOrder = ['Spor', 'Ulusal', 'Haber', 'Belgesel', 'Müzik', 'Sinema', 'Diğer'];
+  const sortedGroups = [...Object.keys(groups)].sort((a, b) => {
+    const ai = groupOrder.findIndex(g => a.includes(g));
+    const bi = groupOrder.findIndex(g => b.includes(g));
+    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  });
+  main.innerHTML = `
+    <div class="page livetv-page tab-content-enter">
+      <header class="page-head">
+        <h1>📺 Canlı TV <span class="channel-count">${channels.length} kanal</span></h1>
+        <input class="livetv-search" id="livetv-search" type="search" placeholder="Kanal ara…" autocomplete="off">
+      </header>
+      <div class="livetv-cats" id="livetv-cats">
+        <button class="cat-btn active" data-cat="">Tümü</button>
+        ${sortedGroups.map(g => `<button class="cat-btn" data-cat="${esc(g)}">${esc(g)}</button>`).join('')}
+      </div>
+      <div class="livetv-grid" id="livetv-grid">
+        ${channels.map(ch => channelCard(ch)).join('')}
+      </div>
+    </div>`;
+  $('#livetv-grid').addEventListener('click', e => {
+    const card = e.target.closest('.ch-card');
+    if (!card) return;
+    openLiveChannel(card.dataset.url, card.dataset.name, card.dataset.logo);
+  });
+  $('#livetv-cats').addEventListener('click', e => {
+    const btn = e.target.closest('.cat-btn');
+    if (!btn) return;
+    $$('.cat-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const cat = btn.dataset.cat;
+    $$('.ch-card', $('#livetv-grid')).forEach(card => {
+      card.hidden = cat && card.dataset.group !== cat;
+    });
+  });
+  $('#livetv-search').addEventListener('input', e => {
+    const q = e.target.value.toLowerCase().trim();
+    $$('.ch-card', $('#livetv-grid')).forEach(card => {
+      card.hidden = q && !card.dataset.name.toLowerCase().includes(q);
+    });
+  });
+}
+
+function parseM3U(text) {
+  const lines = text.split('\n');
+  const channels = [];
+  let current = null;
+  for (const line of lines) {
+    const l = line.trim();
+    if (l.startsWith('#EXTINF:')) {
+      current = {name: '', logo: '', group: '', url: ''};
+      const nameM = l.match(/,(.+)$/);
+      if (nameM) current.name = nameM[1].trim();
+      const logoM = l.match(/tvg-logo="([^"]+)"/);
+      if (logoM) current.logo = logoM[1];
+      const groupM = l.match(/group-title="([^"]+)"/);
+      if (groupM) current.group = groupM[1];
+    } else if (l && !l.startsWith('#') && current) {
+      current.url = l;
+      if (current.url.startsWith('http')) channels.push(current);
+      current = null;
+    }
+  }
+  return channels;
+}
+
+function channelCard(ch) {
+  return `<div class="ch-card" data-url="${esc(ch.url)}" data-name="${esc(ch.name)}" data-logo="${esc(ch.logo)}" data-group="${esc(ch.group)}" role="button" tabindex="0" aria-label="${esc(ch.name)}">
+    <div class="ch-logo">${ch.logo ? `<img src="${esc(ch.logo)}" alt="" loading="lazy" decoding="async">` : `<span class="ch-ph">${esc(ch.name.slice(0,2))}</span>`}</div>
+    <div class="ch-name">${esc(ch.name)}</div>
+  </div>`;
+}
+
+function openLiveChannel(url, name, logo) {
+  const existing = $('#livetv-player-modal');
+  if (existing) existing.remove();
+  const modal = document.createElement('div');
+  modal.id = 'livetv-player-modal';
+  modal.className = 'livetv-modal';
+  modal.innerHTML = `
+    <div class="livetv-modal-inner">
+      <div class="livetv-modal-head">
+        ${logo ? `<img src="${esc(logo)}" alt="" class="livetv-modal-logo">` : ''}
+        <span class="livetv-modal-title">${esc(name)}</span>
+        <button class="icon-btn livetv-modal-close" aria-label="Kapat">✕</button>
+      </div>
+      <div class="livetv-modal-body">
+        <video id="livetv-video" controls autoplay playsinline style="width:100%;height:100%;background:#000"></video>
+        <div id="livetv-status" class="livetv-status"></div>
+      </div>
+    </div>`;
+  document.body.appendChild(modal);
+  modal.querySelector('.livetv-modal-close').onclick = () => {
+    const vid = modal.querySelector('video');
+    if (vid) { vid.pause(); vid.src = ''; }
+    modal.remove();
+  };
+  modal.addEventListener('click', e => { if (e.target === modal) modal.querySelector('.livetv-modal-close').click(); });
+  const video = modal.querySelector('#livetv-video');
+  const status = modal.querySelector('#livetv-status');
+  const tryHls = () => {
+    if (typeof Hls !== 'undefined' && Hls.isSupported()) {
+      const hls = new Hls({maxBufferLength: 30});
+      hls.loadSource(url);
+      hls.attachMedia(video);
+      hls.on(Hls.Events.ERROR, (_, d) => {
+        if (d.fatal) { status.textContent = 'Yayın yüklenemedi: ' + (d.details || 'Hata'); }
+      });
+      modal._hls = hls;
+    } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+      video.src = url;
+    } else {
+      status.textContent = 'Bu kanal bu tarayıcıda oynatılamıyor.';
+    }
+  };
+  if (typeof Hls === 'undefined') {
+    getHls().then(tryHls);
+  } else {
+    tryHls();
+  }
+}
+
 // ---------------- Yönlendirme ----------------
 let routeId = 0;
 let _scrollIo = null; // viewBrowse sonsuz scroll observer — route değişiminde temizlenir
@@ -965,6 +1108,7 @@ window.addEventListener('pagehide', destroyPlayer);
 updateCount();
 // Bölüm değiştirici: tema, menü, türler ve içerik birlikte değişir.
 $$('.tab-btn').forEach(b => b.addEventListener('click', async () => {
+  if (b.dataset.tab === 'livetv') { viewLiveTV(++routeId); return; }
   if (b.dataset.tab === section) return;
   setSection(b.dataset.tab);
   if ($('#search-dialog').open) { si.dispatchEvent(new Event('input')); }
