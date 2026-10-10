@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper' });
+  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom'] });
 });
 
 // ---- TMDB helpers ----
@@ -53,6 +53,20 @@ async function tmdbTv(tmdbId) {
 
 async function tmdbMovie(tmdbId) {
   const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+  return res.json();
+}
+
+async function tmdbTvWithExternal(tmdbId) {
+  const url = `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR&append_to_response=external_ids`;
+  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
+  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+  return res.json();
+}
+
+async function tmdbMovieWithExternal(tmdbId) {
+  const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR&append_to_response=external_ids`;
   const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
   if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
   return res.json();
@@ -350,6 +364,266 @@ app.get('/api/hdfilmcehennemi', async (req, res) => {
   }
 });
 
+// ---- SineWix ----
+const SINEWIX_HEADERS = {
+  'hash256': '711bff4afeb47f07ab08a0b07e85d3835e739295e8a6361db77eebd93d96306b',
+  'signature': '3082058830820370a00302010202145bbfbba9791db758ad12295636e094ab4b07dc24300d06092a864886f70d01010b05003074310b3009060355040613025553311330110603550408130a43616c69666f726e6961311630140603550407130d4d6f756e7461696e205669657731143012060355040a130b476f6f676c6520496e632e3110300e060355040b1307416e64726f69643110300e06035504031307416e64726f696430820222300d06092a864886f70d01010105000382020f003082020a0282020100a5106a24bb3f9c0aaf3a2b228f794b5eaf1757ba758b19736a39d1bdc73fc983a7237b8d5ca5156cfa999c1dab3418bbc2be0920e0ee001c8aa4812d1dae75d080f09e91e0abda83ff9a76e8384a4429f4849248069a59505b12ac2c14ba2e4d1a13afcdaf54e508697ff928a9f738e6f4a6fc27409c55329eb149b5ff89c5a2d7c06bf9e62086f955cad17d7be2623ee9d5ec56068eadc23cb0965a13ff97d49fe10ef41afc6eeca36b4ace9582097faff89f590bc831cdb3a69eec5d15b67c3f2cad49e37ed053733e3d2d400c47755b932bdbe15d749fd6ad1dce30ba5e66094dfb6ee6f64cafb807e11b19a990c5d078c6d6701cda0bdeb21e99404ff166074f4c89b04c418f4e7940db5c78647c475bcfb85d4c4e836ee7d7c1d53e9e736b5d96d4b4d8b98209064b729ac6a682d55a6a930e518d849898bb28329ca0aaa133b5e5270a9d5940cac6af4802a57fd971efda91abb602882dd6aa6ce2b236b57b52ee2481498f0cacbcc2c36c238bc84becad7eaaf1125b9a1ca9ded6c79f3f283a52050377809b2a9995d66e1636b0ed426fdd8685c47cb18e82077f4aefcc07887e1dc58b4d64be1632f0e7b4625da6f40c65a8512a6454a4b96963e7f876136e6c0069a519a79ad632078ed965aa12482458060c030ed50db706d854f88cb004630b49285d8af8b471ff8f6070687826412287b50049bcb7d1b6b62ef90203010001a310300e300c0603551d13040530030101ff300d06092a864886f70d01010b0500038202010051c0b7bd793181dc29ca777d3773f928a366c8469ecf2fa3cfb076e8831970d19bb2b96e44e8ccc647cf0696bb824ac61c23d958525d283cab26037b04d58aa79bf92192db843adf5c26a980f081d2f0e14f759fc5ff4c5bb3dce0860299bfe7b349a8155a2efaf731ba25ce796a80c1442c7bf80f8c1a7912ff0b6f6592264315337251a846460194fa594f81f38f9e5233a63201e931ad9cab5bf119f24025613f307194eaa6eb39a83f3c05a49ba34455b1aff7c6839bbb657d9392ffdf397432af6e56ba9534a8b07d7060fe09691c6cf07cb5324f67b3cc0871a8c621d81fe71d71085c55206a4f57e25f774fd4b979b299e8bb076b50fca42fa57da2d519fd35a4a7c0137babaed4345f8031b63b6a71f5e8268f709d658ccd7c2a58849379d25bfa598c3f4a2c3d9b7d89285fefeb7f0ec65137d38b08ce432a15688b624a179e6a4a505ebc3bcdfbc4d4330508ee2d8d0f016924dcec21a6838ef7d834c6f43bde4a5201ed0b3bb4e9bd377b470e36bcf5bc3d56169dbd8e39567aa7dce4d1a8a8a54a5e1aa6fb1a8aab0062669a966f96e15ccce6fe12ea5e6a8b8c8823bdc94988ca39759fd1cc8fd8ae5c3d74db50b174cf7d77655016c075c91d439ed01cc0a9f695c99fad3b5495fb6cb1e01a5fa020cc6022a85c07ec55f9eba89719f86e49d34ab5bd208c5f70cced2b7b7963c014f8404432979b506de29e',
+  'User-Agent': 'EasyPlex (Android 14; SM-A546B; Samsung Galaxy A54 5G; tr)',
+  'Accept': 'application/json',
+};
+const SINEWIX_KEY = '9iQNC5HQwPlaFuJDkhncJ5XTJ8feGXOJatAA';
+const SINEWIX_BASE = 'https://ydfvfdizipanel.ru/public/api';
+
+async function resolveMediafire(mfUrl) {
+  const r = await fetch(mfUrl, { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'Mozilla/5.0' } });
+  const html = await r.text();
+  const m = html.match(/href="(https:\/\/download\d+\.mediafire\.com[^"]+)"/);
+  return m ? m[1] : mfUrl;
+}
+
+async function sinewixSearch(query) {
+  const url = `${SINEWIX_BASE}/search/${encodeURIComponent(query)}/${SINEWIX_KEY}`;
+  const r = await fetch(url, { signal: AbortSignal.timeout(10000), headers: SINEWIX_HEADERS });
+  if (!r.ok) throw new Error(`SineWix arama HTTP ${r.status}`);
+  const data = await r.json();
+  return data.movies || data.results || data.data || [];
+}
+
+app.get('/api/sinewix', async (req, res) => {
+  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `sinewix:${tmdbId}:${type}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // 1. TMDB'den başlık al (TR + orijinal)
+    let tmdb;
+    if (type === 'movie') {
+      tmdb = await tmdbMovieWithExternal(tmdbId);
+    } else {
+      tmdb = await tmdbTvWithExternal(tmdbId);
+    }
+    const trTitle = tmdb.title || tmdb.name;
+    const origTitle = tmdb.original_title || tmdb.original_name;
+    if (!trTitle && !origTitle) throw new Error('TMDB başlık bulunamadı');
+
+    // 2. SineWix'te ara — önce TR, yoksa orijinal
+    let results = [];
+    if (trTitle) {
+      results = await sinewixSearch(trTitle);
+    }
+    if (results.length === 0 && origTitle && origTitle !== trTitle) {
+      results = await sinewixSearch(origTitle);
+    }
+    if (results.length === 0) throw new Error('SineWix sonuç bulunamadı');
+
+    // 3. TMDB ID eşleşmesi
+    const match = results.find(item => String(item.tmdb_id) === String(tmdbId)) || results[0];
+    const id = match.id || match.movie_id || match.series_id;
+    if (!id) throw new Error('SineWix ID bulunamadı');
+
+    let sources = [];
+
+    if (type === 'movie') {
+      // 4a. Film detayı
+      const detailUrl = `${SINEWIX_BASE}/media/detail/${id}/${SINEWIX_KEY}`;
+      const detailRes = await fetch(detailUrl, { signal: AbortSignal.timeout(10000), headers: SINEWIX_HEADERS });
+      if (!detailRes.ok) throw new Error(`SineWix detail HTTP ${detailRes.status}`);
+      const detailData = await detailRes.json();
+      const videos = detailData.videos || detailData.data?.videos || [];
+
+      for (const v of (Array.isArray(videos) ? videos : [])) {
+        let link = v.link || v.url;
+        if (!link) continue;
+        if (link.includes('mediafire.com')) {
+          link = await resolveMediafire(link).catch(() => link);
+        }
+        sources.push({
+          url: link,
+          quality: v.quality || '1080p',
+          name: 'SineWix (TR Dublaj)',
+          type: 'mkv',
+          lang: 'tr-dub',
+        });
+      }
+    } else {
+      // 4b. Dizi detayı
+      const seriesUrl = `${SINEWIX_BASE}/series/show/${id}/${SINEWIX_KEY}`;
+      const seriesRes = await fetch(seriesUrl, { signal: AbortSignal.timeout(10000), headers: SINEWIX_HEADERS });
+      if (!seriesRes.ok) throw new Error(`SineWix series HTTP ${seriesRes.status}`);
+      const seriesData = await seriesRes.json();
+
+      let seasons = seriesData.seasons || seriesData.data?.seasons || [];
+      // seasons nesne ise diziye çevir
+      if (!Array.isArray(seasons)) seasons = Object.values(seasons);
+
+      const seasonNum = parseInt(season, 10);
+      const episodeNum = parseInt(episode, 10);
+
+      // Sezon bul — index veya season_number ile
+      const seasonData = seasons[seasonNum - 1]
+        || seasons.find(s => String(s.season_number || s.number) === String(seasonNum));
+      if (!seasonData) throw new Error('SineWix sezon bulunamadı');
+
+      let episodes = seasonData.episodes || [];
+      if (!Array.isArray(episodes)) episodes = Object.values(episodes);
+
+      const episodeData = episodes[episodeNum - 1]
+        || episodes.find(e => String(e.episode_number || e.number) === String(episodeNum));
+      if (!episodeData) throw new Error('SineWix bölüm bulunamadı');
+
+      let videos = episodeData.videos || [];
+      if (!Array.isArray(videos)) videos = Object.values(videos);
+
+      for (const v of videos) {
+        let link = v.link || v.url;
+        if (!link) continue;
+        if (link.includes('mediafire.com')) {
+          link = await resolveMediafire(link).catch(() => link);
+        }
+        sources.push({
+          url: link,
+          quality: v.quality || '1080p',
+          name: 'SineWix (TR Dublaj)',
+          type: 'mkv',
+          lang: 'tr-dub',
+        });
+      }
+    }
+
+    const result = { sources };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
+// ---- DiziMom ----
+const DIZIMOM_BASE = 'https://www.dizimom.diy';
+const DIZIMOM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36';
+
+app.get('/api/dizimom', async (req, res) => {
+  const { tmdbId, season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `dizimom:${tmdbId}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // 1. TMDB'den dizi adı al (TR)
+    const tmdb = await tmdbTv(tmdbId);
+    const name = tmdb.name || tmdb.original_name;
+    if (!name) throw new Error('TMDB başlık bulunamadı');
+
+    // 2. DiziMom arama
+    const searchRes = await fetch(`${DIZIMOM_BASE}/?s=${encodeURIComponent(name)}`, {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': DIZIMOM_UA, 'Referer': DIZIMOM_BASE },
+    });
+    if (!searchRes.ok) throw new Error(`DiziMom arama HTTP ${searchRes.status}`);
+    const searchHtml = await searchRes.text();
+
+    // 3. Parse et — slug bul
+    const $s = cheerio.load(searchHtml);
+    let slug = null;
+
+    // Primary selectors
+    const primaryHref = $s('.single-item .categorytitle a, article.single-item h2 a').first().attr('href');
+    if (primaryHref) {
+      const m = primaryHref.match(/\/diziler\/([^/]+)\//);
+      if (m) slug = m[1];
+    }
+
+    // Fallback
+    if (!slug) {
+      const fallbackHref = $s('a[href*="/diziler/"]').first().attr('href');
+      if (fallbackHref) {
+        const m = fallbackHref.match(/\/diziler\/([^/]+)\//);
+        if (m) slug = m[1];
+      }
+    }
+
+    if (!slug) throw new Error('DiziMom slug bulunamadı');
+
+    // 4. Show sayfası
+    const showRes = await fetch(`${DIZIMOM_BASE}/diziler/${slug}/`, {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': DIZIMOM_UA, 'Referer': `${DIZIMOM_BASE}/?s=${encodeURIComponent(name)}` },
+    });
+    if (!showRes.ok) throw new Error(`DiziMom show sayfası HTTP ${showRes.status}`);
+    const showHtml = await showRes.text();
+    const $show = cheerio.load(showHtml);
+
+    // 5. Bölüm linkini bul
+    const epSelector = `a[href*="${season}-sezon-${episode}-bolum"], a[href*="-sezon"][href*="-bolum"]`;
+    const epHref = $show(epSelector).first().attr('href')
+      || $show('a[href*="-sezon"][href*="-bolum"]').filter((_i, el) => {
+        const h = $show(el).attr('href') || '';
+        return h.includes(`${season}-sezon`) && h.includes(`${episode}-bolum`);
+      }).first().attr('href');
+
+    if (!epHref) throw new Error('DiziMom bölüm linki bulunamadı');
+
+    // 6. Bölüm sayfasını çek, iframe src'leri topla
+    const epRes = await fetch(epHref, {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': DIZIMOM_UA, 'Referer': `${DIZIMOM_BASE}/diziler/${slug}/` },
+    });
+    if (!epRes.ok) throw new Error(`DiziMom bölüm sayfası HTTP ${epRes.status}`);
+    const epHtml = await epRes.text();
+    const $ep = cheerio.load(epHtml);
+
+    const iframeSrcs = [];
+    $ep('iframe[src*="hdplayersystem"], iframe[src*="hdstreamable"], iframe[src*="filmizle"]').each((_i, el) => {
+      const src = $ep(el).attr('src');
+      if (src) iframeSrcs.push(src);
+    });
+
+    if (iframeSrcs.length === 0) throw new Error('DiziMom uyumlu iframe bulunamadı');
+
+    // 7. İlk geçerli iframe için HDPlayer POST
+    let videoUrl = null;
+    for (const iframeSrc of iframeSrcs) {
+      try {
+        const iframeUrl = new URL(iframeSrc);
+        const dataParam = iframeUrl.searchParams.get('data');
+        if (!dataParam) continue;
+
+        const postUrl = `https://${iframeUrl.host}/player/index.php?data=${dataParam}&do=getVideo`;
+        const body = new URLSearchParams({ hash: dataParam, r: epHref });
+
+        const postRes = await fetch(postUrl, {
+          method: 'POST',
+          signal: AbortSignal.timeout(10000),
+          body,
+          headers: {
+            'X-Requested-With': 'XMLHttpRequest',
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Referer': iframeSrc,
+            'User-Agent': DIZIMOM_UA,
+          },
+        });
+        if (!postRes.ok) continue;
+        const postData = await postRes.json().catch(() => ({}));
+        const url = postData.securedLink || postData.videoSource;
+        if (url) { videoUrl = url; break; }
+      } catch {
+        // try next iframe
+      }
+    }
+
+    if (!videoUrl) throw new Error('DiziMom video URL bulunamadı');
+
+    const result = { sources: [{ url: videoUrl, quality: '1080p', name: 'DiziMom', type: 'hls', lang: 'tr' }] };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
 // ---- All (parallel) ----
 app.get('/api/all', async (req, res) => {
   const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
@@ -358,7 +632,7 @@ app.get('/api/all', async (req, res) => {
   const base = `http://localhost:${PORT}`;
   const fetchSource = async (url) => {
     try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
+      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
       if (!r.ok) return [];
       const d = await r.json().catch(() => ({}));
       return d.sources || [];
@@ -370,14 +644,22 @@ app.get('/api/all', async (req, res) => {
   let allSources = [];
   if (type === 'tv') {
     const params = `tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`;
-    const [a, b, c] = await Promise.all([
+    const results = await Promise.all([
       fetchSource(`${base}/api/animecix?${params}`),
       fetchSource(`${base}/api/anizium?${params}`),
       fetchSource(`${base}/api/sonanime?${params}`),
+      fetchSource(`${base}/api/sinewix?${params}&type=tv`),
+      fetchSource(`${base}/api/dizimom?${params}`),
     ]);
-    allSources = [...a, ...b, ...c];
+    allSources = results.flat();
   } else {
-    allSources = await fetchSource(`${base}/api/hdfilmcehennemi?tmdbId=${encodeURIComponent(tmdbId)}`);
+    // film
+    const tmdbParam = `tmdbId=${encodeURIComponent(tmdbId)}`;
+    const results = await Promise.all([
+      fetchSource(`${base}/api/hdfilmcehennemi?${tmdbParam}`),
+      fetchSource(`${base}/api/sinewix?${tmdbParam}&type=movie`),
+    ]);
+    allSources = results.flat();
   }
 
   res.json({ sources: allSources, count: allSources.length });
