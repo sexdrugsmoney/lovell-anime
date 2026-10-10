@@ -61,12 +61,7 @@ function setSection(next) {
   store.set('tab', section);
   const root = document.documentElement;
   root.dataset.section = section;
-  $$('.tab-btn').forEach(b => {
-    const on = b.dataset.tab === section;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-selected', String(on));
-  });
-  $('.tab-bar')?.style.setProperty('--i', section === 'media' ? 1 : 0);
+  syncTabs(section);
   Object.entries(S().nav).forEach(([k, t]) => { const a = $(`[data-nav="${k}"]`); if (a) a.textContent = t; });
   const sl = $('#search-label');
   if (sl) sl.textContent = S().search;
@@ -78,6 +73,68 @@ function setSection(next) {
   updateCount();
 }
 const withSection = path => path + (path.includes('?') ? '&' : '?') + 'section=' + section;
+
+// ---------------- Animasyon yardımcıları ----------------
+const TAB_INDEX = {anime: 0, media: 1, livetv: 2};
+// Üç bölümlü kayan düğme: seçili sekmeyi ve kaydırıcının yerini ayarlar.
+function syncTabs(active) {
+  $$('.tab-btn').forEach(b => {
+    const on = b.dataset.tab === active;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-selected', String(on));
+  });
+  $('.tab-bar')?.style.setProperty('--i', TAB_INDEX[active] ?? 0);
+}
+// Bölüm değişirken tıklanan noktadan yayılan dairesel geçiş (View Transitions API destekleyen tarayıcılarda).
+async function withTransition(ev, fn) {
+  if (reduceMotion || !document.startViewTransition) return fn();
+  const r = ev?.currentTarget?.getBoundingClientRect?.();
+  const x = ev?.clientX || (r ? r.left + r.width / 2 : innerWidth / 2), y = ev?.clientY || (r ? r.top + r.height / 2 : 0);
+  const root = document.documentElement;
+  root.style.setProperty('--vt-x', x + 'px');
+  root.style.setProperty('--vt-y', y + 'px');
+  root.style.setProperty('--vt-r', Math.hypot(Math.max(x, innerWidth - x), Math.max(y, innerHeight - y)) + 'px');
+  const t = document.startViewTransition(async () => {
+    await fn();
+    // Yeni sayfa ilk içeriğini çizene kadar kısa bir süre bekle (en fazla 450 ms).
+    await new Promise(res => { const until = Date.now() + 450; const tick = () => (main.querySelector('.loading, .hero-skeleton') && Date.now() < until) ? setTimeout(tick, 40) : res(); tick(); });
+  });
+  try { await t.finished; } catch {}
+}
+// Her sayfa geçişinde içeriğin hafifçe yukarı süzülerek gelmesi.
+function pageEnter() {
+  if (reduceMotion || !main.animate) return;
+  main.animate([{opacity: 0, transform: 'translateY(10px)'}, {opacity: 1, transform: 'none'}], {duration: 320, easing: 'cubic-bezier(.2,.7,.2,1)'});
+}
+// Afişlere 3B eğim + parıltı (yalnızca fareyle).
+if (!reduceMotion && matchMedia('(hover: hover) and (pointer: fine)').matches) {
+  let tilted = null;
+  const reset = el => { if (el) { el.style.removeProperty('--rx'); el.style.removeProperty('--ry'); el.classList.remove('tilting'); } };
+  document.addEventListener('pointermove', e => {
+    const img = e.target.closest?.('.card .card-img, .rank .card-img, .hero-poster');
+    if (img !== tilted) { reset(tilted); tilted = img; }
+    if (!img) return;
+    const r = img.getBoundingClientRect();
+    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+    img.classList.add('tilting');
+    img.style.setProperty('--rx', ((0.5 - py) * 10).toFixed(2) + 'deg');
+    img.style.setProperty('--ry', ((px - 0.5) * 12).toFixed(2) + 'deg');
+    img.style.setProperty('--gx', (px * 100).toFixed(1) + '%');
+    img.style.setProperty('--gy', (py * 100).toFixed(1) + '%');
+  }, {passive: true});
+  document.addEventListener('pointerleave', () => { reset(tilted); tilted = null; });
+}
+// Düğmelerde tıklama dalgası.
+document.addEventListener('pointerdown', e => {
+  const b = e.target.closest?.('.btn, .tab-btn, .chip, .cat-btn, .kind-switch a');
+  if (!b || reduceMotion) return;
+  const r = b.getBoundingClientRect(), d = Math.max(r.width, r.height) * 2;
+  const w = document.createElement('span');
+  w.className = 'ripple';
+  w.style.cssText = `width:${d}px;height:${d}px;left:${e.clientX - r.left - d / 2}px;top:${e.clientY - r.top - d / 2}px`;
+  b.append(w);
+  w.addEventListener('animationend', () => w.remove(), {once: true});
+});
 function saveProgress(a, s, e, t, d) {
   if (!(t > 0) || !(d > 0)) return;
   progress[`${keyOf(a)}:${s}:${e}`] = {t: Math.round(t), d: Math.round(d), at: Date.now()};
@@ -224,7 +281,13 @@ function observeCards(root = document) {
     entries.forEach(e => { if (e.isIntersecting) { e.target.classList.add('visible'); io.unobserve(e.target); } });
   }, {threshold: 0.08});
   _cardIo = io;
-  $$('.card, .wide, .land, .rank', root).forEach(c => io.observe(c));
+  // Aynı satırdaki kartlar sırayla (kademeli) belirir.
+  $$('.card, .wide, .land, .rank', root).forEach(c => {
+    if (c.classList.contains('visible')) return;
+    const idx = [...c.parentElement.children].indexOf(c);
+    c.style.setProperty('--d', (idx % 8) * 55 + 'ms');
+    io.observe(c);
+  });
 }
 
 // ---------------- Ana sayfa ----------------
@@ -234,7 +297,7 @@ function heroView(items) {
   return `<section class="hero" aria-roledescription="carousel" aria-label="Öne çıkanlar">
     <div class="hero-bg"></div>
     <div class="hero-shade"></div>
-    ${section === 'anime' ? '<p class="hero-native" lang="ja" aria-hidden="true" hidden></p><div class="hero-poster" aria-hidden="true"></div>' : ''}
+    ${section === 'anime' ? `<div class="petals" aria-hidden="true">${Array.from({length: 14}, (_, k) => `<i style="--k:${k}"></i>`).join('')}</div><p class="hero-native" lang="ja" aria-hidden="true" hidden></p><div class="hero-poster" aria-hidden="true"></div>` : ''}
     <div class="hero-body"></div>
     <div class="hero-strip" role="tablist">${items.map((a, i) => `<button role="tab" class="thumb" data-i="${i}" aria-label="${esc(a.title)}">${a.backdrop ? `<img src="${esc(a.backdrop)}" alt="" data-fb>` : ''}<i></i></button>`).join('')}</div>
   </section>`;
@@ -246,7 +309,18 @@ function bindHero(items) {
   const show = n => {
     i = (n + items.length) % items.length;
     const a = items[i];
-    $('.hero-bg', hero).innerHTML = a.backdrop ? `<img src="${esc(a.backdrop)}" alt="" loading="eager" fetchpriority="high" data-fb>` : '';
+    // Arka plan çapraz geçişle değişir; eski görsel yenisi yüklenince kaybolur.
+    const bg = $('.hero-bg', hero);
+    if (a.backdrop) {
+      const img = document.createElement('img');
+      Object.assign(img, {src: a.backdrop, alt: '', decoding: 'async'});
+      img.dataset.fb = '';
+      img.className = 'hero-img';
+      const done = () => { $$('img', bg).forEach(o => o !== img && o.classList.add('out')); setTimeout(() => $$('img.out', bg).forEach(o => o.remove()), 1200); };
+      img.addEventListener('load', done, {once: true});
+      img.addEventListener('error', done, {once: true});
+      bg.append(img);
+    } else bg.innerHTML = '';
     const anime = section === 'anime';
     const native = anime && a.original && a.original !== a.title && !/[a-z]/i.test(a.original) ? a.original : '';
     $('.hero-body', hero).innerHTML = `
@@ -266,6 +340,10 @@ function bindHero(items) {
     if (!reduceMotion && items.length > 1) heroTimer = setTimeout(() => { if (document.contains(hero) && !hero.matches(':hover, :focus-within')) show(i + 1); else heroTimer = setTimeout(() => show(i + 1), 9000); }, 9000);
   };
   $$('.thumb', hero).forEach(t => t.onclick = () => show(Number(t.dataset.i)));
+  // Dokunmatik ekranda sağa / sola kaydırarak vitrini değiştir.
+  let sx = null;
+  hero.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, {passive: true});
+  hero.addEventListener('touchend', e => { if (sx === null) return; const dx = e.changedTouches[0].clientX - sx; sx = null; if (Math.abs(dx) > 50) show(i + (dx < 0 ? 1 : -1)); }, {passive: true});
   show(0);
 }
 
@@ -390,12 +468,19 @@ async function viewBrowse(v, kind, params) {
 }
 
 // ---------------- Listem ----------------
+// Listeyi türe göre (dizi / film) bölümlere ayırır.
+function listGroups(items) {
+  const tv = items.filter(a => !isMovie(a)), mv = items.filter(isMovie);
+  const grid = list => `<div class="grid ${section === 'media' ? 'grid-land' : ''}">${list.map(gridCard).join('')}</div>`;
+  if (!tv.length || !mv.length) return grid(items);
+  return [[section === 'anime' ? 'Seriler' : 'Diziler', tv], ['Filmler', mv]].map(([t, l]) => `<section class="list-group"><h2 class="list-group-head">${t}<small>${l.length}</small></h2>${grid(l)}</section>`).join('');
+}
 function viewList() {
   const mine = myList.filter(a => secOf(a) === section);
   const others = myList.length - mine.length;
   const otherName = SECTIONS[section === 'anime' ? 'media' : 'anime'].label;
   main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${esc(S().label)}</p><h1>Listem</h1></div>${mine.length ? `<p>${mine.length} başlık. Liste bu tarayıcıda saklanır.${others ? ` ${otherName} listende ${others} başlık daha var.` : ''}</p>` : ''}</header>
-    ${mine.length ? `<div class="grid ${section === 'media' ? 'grid-land' : ''}">${mine.map(gridCard).join('')}</div>` : `<div class="state"><h2>Listen boş</h2><p>${S().empty}${others ? ` ${otherName} listende ${others} başlık var.` : ''}</p><a class="btn" href="#/kesfet">${section === 'anime' ? 'Serilere göz at' : 'Dizilere göz at'}</a></div>`}
+    ${mine.length ? listGroups(mine) : `<div class="state"><h2>Listen boş</h2><p>${S().empty}${others ? ` ${otherName} listende ${others} başlık var.` : ''}</p><a class="btn" href="#/kesfet">${section === 'anime' ? 'Serilere göz at' : 'Dizilere göz at'}</a></div>`}
   </div>`;
   imgFallback();
   observeCards();
@@ -471,7 +556,7 @@ async function viewWatch(v, kind, id, params) {
           <p class="now" id="now"></p>
           <h1 class="title">${esc(a.title)}</h1>
           ${a.original && a.original !== a.title ? `<p class="original" ${section === 'anime' ? 'lang="ja"' : ''}>${esc(a.original)}</p>` : ''}
-          <p class="facts">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}${a.imdbRating ? `<span class="imdb-score" title="IMDb puanı"><svg viewBox="0 0 32 16" width="32" height="16" aria-hidden="true"><rect width="32" height="16" rx="3" fill="#F5C518"/><text x="4" y="12" font-size="10" font-weight="bold" fill="#000">IMDb</text></svg> ${esc(a.imdbRating)}</span>` : ''}${a.rottenTomatoes ? `<span title="Rotten Tomatoes">🍅 ${esc(a.rottenTomatoes)}</span>` : ''}${a.metascore ? `<span title="Metascore" class="metascore">${esc(a.metascore)}</span>` : ''}${a.awards ? `<span title="${esc(a.awards)}" class="awards-badge">🏆</span>` : ''}${a.boxOffice ? `<span title="Box office">💰 ${esc(a.boxOffice)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}${movie ? `<span>Film${a.runtime ? `, ${a.runtime} dk` : ''}</span>` : a.episodeCount ? `<span>${a.episodeCount} bölüm</span>` : ''}${a.genres?.length ? `<span>${esc(a.genres.join(', '))}</span>` : ''}${a.studios?.length ? `<span>${esc(a.studios.join(', '))}</span>` : ''}</p>
+          <p class="facts">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}${a.imdbRating ? `<span class="imdb-score" title="IMDb puanı"><svg viewBox="0 0 32 16" width="32" height="16" aria-hidden="true"><rect width="32" height="16" rx="3" fill="#F5C518"/><text x="4" y="12" font-size="10" font-weight="bold" fill="#000">IMDb</text></svg> ${esc(a.imdbRating)}</span>` : ''}${a.rottenTomatoes ? `<span title="Rotten Tomatoes" class="badge-rt"><b>RT</b>${esc(a.rottenTomatoes)}</span>` : ''}${a.metascore ? `<span title="Metascore" class="metascore">${esc(a.metascore)}</span>` : ''}${a.awards ? `<span title="${esc(a.awards)}" class="awards-badge"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v3a4 4 0 0 1-8 0zM4 3H2v1a2 2 0 0 0 2 2M12 3h2v1a2 2 0 0 1-2 2M8 9v3M5 14h6"/></svg>Ödüllü</span>` : ''}${a.boxOffice ? `<span title="Gişe" class="badge-box">Gişe ${esc(a.boxOffice)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}${movie ? `<span>Film${a.runtime ? `, ${a.runtime} dk` : ''}</span>` : a.episodeCount ? `<span>${a.episodeCount} bölüm</span>` : ''}${a.genres?.length ? `<span>${esc(a.genres.join(', '))}</span>` : ''}${a.studios?.length ? `<span>${esc(a.studios.join(', '))}</span>` : ''}</p>
           ${a.overview ? `<div class="overview" id="overview"><p>${esc(a.overview).replace(/\n+/g, '</p><p>')}</p></div>${a.overviewLang === 'en' ? '<p class="note">Türkçe özet bulunamadı, İngilizcesi gösteriliyor.</p>' : ''}` : ''}
           <div class="actions">
             <button class="btn ${inList(a) ? 'btn-ghost' : ''}" id="save">${inList(a) ? CHECK + 'Listende' : PLUS + 'Listeye ekle'}</button>
@@ -617,13 +702,17 @@ function mountEmbed(ctx, index) {
   const stage = $('#stage');
   const hasLocal = !CLOUD;
 
+  // VidRift ve bazı sağlayıcılar sandbox'ı reddeder
+  const noSandbox = ['vidrift', 'vidsrc', 'vidsrcio', 'vidsrcto', 'vidsrcmov', 'vidrock', 'yapgrid', 'streamflizo', 'megaplay', 'vidhawk', 'justplay', 'aniembed'];
+  const useSandbox = !noSandbox.includes(embed.id);
+
   stage.innerHTML = `<div class="stage-inner vidrift-wrap">
     <iframe
       class="vidrift-frame"
       src="${esc(embed.url)}"
       allowfullscreen
       allow="autoplay; fullscreen; encrypted-media *; autoplay *; fullscreen *; picture-in-picture *"
-      sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"
+      ${useSandbox ? 'sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-fullscreen"' : ''}
       title="${esc(ctx.a.title)}"
       referrerpolicy="strict-origin-when-cross-origin"
     ></iframe>
@@ -842,9 +931,13 @@ si.addEventListener('input', () => {
   searchTimer = setTimeout(async () => {    try {
       const d = await api(withSection(`/api/search?q=${encodeURIComponent(q)}`));
       if (seq !== searchSeq) return;
-      sr.innerHTML = d.items.length ? d.items.slice(0, 14).map((a, i) => `<a class="result" role="option" href="${watchHref(a)}" data-i="${i}">
+      const top = d.items.slice(0, 14);
+      const row = (a, i) => `<a class="result" role="option" href="${watchHref(a)}" data-i="${i}" style="--d:${i * 30}ms">
           <span class="result-img thumb">${a.poster ? `<img src="${esc(a.poster)}" alt="" data-fb>` : ''}</span>
-          <span><strong>${esc(a.title)}</strong><small>${[a.year, kindLabel(a), a.score ? score(a.score) + ' puan' : ''].filter(Boolean).join(', ')}</small></span></a>`).join('')
+          <span><strong>${esc(a.title)}</strong><small>${[a.year, kindLabel(a), a.score ? score(a.score) + ' puan' : ''].filter(Boolean).join(', ')}</small></span></a>`;
+      // Sonuçlar dizi / film olarak gruplanır.
+      const tvR = top.filter(a => !isMovie(a)), mvR = top.filter(isMovie);
+      sr.innerHTML = top.length ? [[section === 'anime' ? 'Seriler' : 'Diziler', tvR], ['Filmler', mvR]].filter(([, l]) => l.length).map(([t, l]) => `<p class="result-group">${t}<small>${l.length}</small></p>${l.map(row).join('')}`).join('')
         : `<p class="muted pad">“${esc(q)}” için ${esc(S().label)} bölümünde sonuç yok. ${section === 'anime' ? 'Japonca ya da İngilizce adını dene, ya da Film & Dizi bölümünde ara.' : 'Orijinal adını dene; anime arıyorsan Anime bölümüne geç.'}</p>`;
       imgFallback(sr);
     } catch (e) { if (seq === searchSeq) sr.innerHTML = `<p class="muted pad">Arama yapılamadı: ${esc(e.message)}</p>`; }
@@ -949,53 +1042,87 @@ async function viewLiveTV(v) {
     return;
   }
   if (v !== routeId) return;
-  const groups = {};
+  renderLiveTV(channels);
+}
+
+// Kanal kategorileri: M3U'daki "🇹🇷 SPOR KANALLARI" gibi başlıkları sadeleştirip sıralar.
+const LIVE_GROUPS = [
+  {key: 'ULUSAL', name: 'Ulusal', icon: '<path d="M3 5h14v9H3zM7 17h6"/>', h: 210},
+  {key: 'SPOR', name: 'Spor', icon: '<circle cx="10" cy="10" r="7"/><path d="M10 3v14M3 10h14M5 5c3 3 7 3 10 0M5 15c3-3 7-3 10 0"/>', h: 140},
+  {key: 'HABER', name: 'Haber', icon: '<path d="M3 4h11v12H5a2 2 0 0 1-2-2zM14 7h3v7a2 2 0 0 1-2 2M6 7h5M6 10h5M6 13h3"/>', h: 0},
+  {key: 'SİNEMA', name: 'Sinema', icon: '<rect x="3" y="4" width="14" height="12" rx="1"/><path d="M7 4v12M13 4v12M3 8h4M3 12h4M13 8h4M13 12h4"/>', h: 275},
+  {key: 'BELGESEL', name: 'Belgesel & Çocuk', icon: '<path d="M10 3c4 0 7 3 7 7s-3 7-7 7-7-3-7-7 3-7 7-7zM3 10h14M10 3c2 2 3 4.5 3 7s-1 5-3 7c-2-2-3-4.5-3-7s1-5 3-7z"/>', h: 95},
+  {key: 'MÜZİK', name: 'Müzik & Eğlence', icon: '<path d="M7 15V4l10-2v11"/><circle cx="5" cy="15" r="2"/><circle cx="15" cy="13" r="2"/>', h: 320},
+];
+const liveGroupOf = raw => {
+  const up = String(raw || '').toLocaleUpperCase('tr');
+  return LIVE_GROUPS.find(g => up.includes(g.key)) || {key: 'DIGER', name: String(raw || 'Diğer').replace(/^[^\p{L}\d]+/u, '').trim() || 'Diğer', icon: '<circle cx="10" cy="10" r="6"/>', h: 40};
+};
+const liveIcon = g => `<svg viewBox="0 0 20 20" aria-hidden="true">${g.icon}</svg>`;
+
+function renderLiveTV(channels) {
+  const groups = new Map();
   channels.forEach(ch => {
-    const g = ch.group || 'Diğer';
-    if (!groups[g]) groups[g] = [];
-    groups[g].push(ch);
+    const g = liveGroupOf(ch.group);
+    ch.cat = g.name;
+    if (!groups.has(g.name)) groups.set(g.name, {...g, items: []});
+    groups.get(g.name).items.push(ch);
   });
-  const groupOrder = ['Spor', 'Ulusal', 'Haber', 'Belgesel', 'Müzik', 'Sinema', 'Diğer'];
-  const sortedGroups = [...Object.keys(groups)].sort((a, b) => {
-    const ai = groupOrder.findIndex(g => a.includes(g));
-    const bi = groupOrder.findIndex(g => b.includes(g));
-    return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi);
+  const ordered = [...groups.values()].sort((x, y) => {
+    const xi = LIVE_GROUPS.findIndex(g => g.name === x.name), yi = LIVE_GROUPS.findIndex(g => g.name === y.name);
+    return (xi < 0 ? 99 : xi) - (yi < 0 ? 99 : yi);
   });
+  const recentLive = store.get('liveRecent', []).filter(r => channels.some(c => c.url === r.url)).slice(0, 8);
   main.innerHTML = `
-    <div class="page livetv-page tab-content-enter">
-      <header class="page-head">
-        <h1>📺 Canlı TV <span class="channel-count">${channels.length} kanal</span></h1>
-        <input class="livetv-search" id="livetv-search" type="search" placeholder="Kanal ara…" autocomplete="off">
+    <div class="page livetv-page">
+      <header class="live-head">
+        <div>
+          <p class="live-badge"><i></i>CANLI</p>
+          <h1>Canlı TV</h1>
+          <p class="live-sub">${channels.length} kanal · ${ordered.length} kategori · kesintisiz yayın</p>
+        </div>
+        <label class="live-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input id="livetv-search" type="search" placeholder="Kanal ara" autocomplete="off" aria-label="Kanal ara"></label>
       </header>
-      <div class="livetv-cats" id="livetv-cats">
-        <button class="cat-btn active" data-cat="">Tümü</button>
-        ${sortedGroups.map(g => `<button class="cat-btn" data-cat="${esc(g)}">${esc(g)}</button>`).join('')}
+      <nav class="livetv-cats" id="livetv-cats" aria-label="Kanal kategorileri">
+        <button class="cat-btn active" data-cat="" type="button">Tümü <small>${channels.length}</small></button>
+        ${ordered.map(g => `<button class="cat-btn" data-cat="${esc(g.name)}" type="button" style="--h:${g.h}">${liveIcon(g)}${esc(g.name)} <small>${g.items.length}</small></button>`).join('')}
+      </nav>
+      ${recentLive.length ? `<section class="ch-group ch-recent" data-group="__recent"><h2 class="ch-group-head"><svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="7"/><path d="M10 6v4l3 2"/></svg>Son izlediklerin</h2><div class="livetv-grid">${recentLive.map((ch, i) => channelCard(ch, i)).join('')}</div></section>` : ''}
+      <div id="livetv-grid">
+        ${ordered.map(g => `<section class="ch-group" data-group="${esc(g.name)}" style="--h:${g.h}">
+          <h2 class="ch-group-head">${liveIcon(g)}${esc(g.name)}<small>${g.items.length} kanal</small></h2>
+          <div class="livetv-grid">${g.items.map((ch, i) => channelCard(ch, i)).join('')}</div>
+        </section>`).join('')}
       </div>
-      <div class="livetv-grid" id="livetv-grid">
-        ${channels.map(ch => channelCard(ch)).join('')}
-      </div>
+      <div class="state" id="livetv-empty" hidden><h2>Kanal bulunamadı</h2><p>Başka bir ad dene ya da kategoriyi değiştir.</p></div>
     </div>`;
-  $('#livetv-grid').addEventListener('click', e => {
-    const card = e.target.closest('.ch-card');
-    if (!card) return;
-    openLiveChannel(card.dataset.url, card.dataset.name, card.dataset.logo);
-  });
+  const page = $('.livetv-page');
+  const open = card => card && openLiveChannel(card.dataset.url, card.dataset.name, card.dataset.logo, card.dataset.group);
+  page.addEventListener('click', e => open(e.target.closest('.ch-card')));
+  page.addEventListener('keydown', e => { if ((e.key === 'Enter' || e.key === ' ') && e.target.matches('.ch-card')) { e.preventDefault(); open(e.target); } });
+  let cat = '';
+  const apply = () => {
+    const q = $('#livetv-search').value.toLocaleLowerCase('tr').trim();
+    let shown = 0;
+    $$('.ch-group', page).forEach(sec => {
+      const isRecent = sec.dataset.group === '__recent';
+      let n = 0;
+      $$('.ch-card', sec).forEach(c => { const ok = (!q || c.dataset.name.toLocaleLowerCase('tr').includes(q)); c.hidden = !ok; if (ok) n++; });
+      sec.hidden = isRecent ? !!(q || cat) || !n : (cat && sec.dataset.group !== cat) || !n;
+      if (!sec.hidden && !isRecent) shown += n;
+    });
+    $('#livetv-empty').hidden = shown > 0;
+  };
   $('#livetv-cats').addEventListener('click', e => {
     const btn = e.target.closest('.cat-btn');
     if (!btn) return;
-    $$('.cat-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    const cat = btn.dataset.cat;
-    $$('.ch-card', $('#livetv-grid')).forEach(card => {
-      card.hidden = cat && card.dataset.group !== cat;
-    });
+    $$('.cat-btn').forEach(b => b.classList.toggle('active', b === btn));
+    cat = btn.dataset.cat;
+    apply();
+    if (cat) window.scrollTo({top: Math.max(0, page.offsetTop - 70), behavior: reduceMotion ? 'auto' : 'smooth'});
   });
-  $('#livetv-search').addEventListener('input', e => {
-    const q = e.target.value.toLowerCase().trim();
-    $$('.ch-card', $('#livetv-grid')).forEach(card => {
-      card.hidden = q && !card.dataset.name.toLowerCase().includes(q);
-    });
-  });
+  $('#livetv-search').addEventListener('input', apply);
+  $$('.ch-logo img', page).forEach(img => img.addEventListener('error', () => { img.replaceWith(Object.assign(document.createElement('span'), {className: 'ch-ph', textContent: img.closest('.ch-card').dataset.name.slice(0, 2)})); }, {once: true}));
 }
 
 function parseM3U(text) {
@@ -1021,14 +1148,17 @@ function parseM3U(text) {
   return channels;
 }
 
-function channelCard(ch) {
-  return `<div class="ch-card" data-url="${esc(ch.url)}" data-name="${esc(ch.name)}" data-logo="${esc(ch.logo)}" data-group="${esc(ch.group)}" role="button" tabindex="0" aria-label="${esc(ch.name)}">
-    <div class="ch-logo">${ch.logo ? `<img src="${esc(ch.logo)}" alt="" loading="lazy" decoding="async">` : `<span class="ch-ph">${esc(ch.name.slice(0,2))}</span>`}</div>
+function channelCard(ch, i = 0) {
+  const g = liveGroupOf(ch.group);
+  return `<div class="ch-card" data-url="${esc(ch.url)}" data-name="${esc(ch.name)}" data-logo="${esc(ch.logo)}" data-group="${esc(ch.group)}" role="button" tabindex="0" aria-label="${esc(ch.name)} canlı izle" style="--h:${g.h};--d:${Math.min(i, 16) * 25}ms">
+    <div class="ch-logo">${ch.logo ? `<img src="${esc(ch.logo)}" alt="" loading="lazy" decoding="async">` : `<span class="ch-ph">${esc(ch.name.slice(0, 2))}</span>`}<span class="ch-live"><i></i>CANLI</span><span class="ch-play">${PLAY}</span></div>
     <div class="ch-name">${esc(ch.name)}</div>
   </div>`;
 }
 
-function openLiveChannel(url, name, logo) {
+function openLiveChannel(url, name, logo, group = '') {
+  // Son izlenen kanalları hatırla (en fazla 8).
+  store.set('liveRecent', [{url, name, logo, group}, ...store.get('liveRecent', []).filter(r => r.url !== url)].slice(0, 8));
   const existing = $('#livetv-player-modal');
   if (existing) existing.remove();
   const modal = document.createElement('div');
@@ -1038,8 +1168,9 @@ function openLiveChannel(url, name, logo) {
     <div class="livetv-modal-inner">
       <div class="livetv-modal-head">
         ${logo ? `<img src="${esc(logo)}" alt="" class="livetv-modal-logo">` : ''}
-        <span class="livetv-modal-title">${esc(name)}</span>
-        <button class="icon-btn livetv-modal-close" aria-label="Kapat">✕</button>
+        <span class="livetv-modal-title">${esc(name)}<small>${esc(liveGroupOf(group).name)}</small></span>
+        <span class="live-badge live-badge-sm"><i></i>CANLI</span>
+        <button class="icon-btn livetv-modal-close" aria-label="Kapat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button>
       </div>
       <div class="livetv-modal-body">
         <video id="livetv-video" controls autoplay playsinline style="width:100%;height:100%;background:#000"></video>
@@ -1053,6 +1184,11 @@ function openLiveChannel(url, name, logo) {
     modal.remove();
   };
   modal.addEventListener('click', e => { if (e.target === modal) modal.querySelector('.livetv-modal-close').click(); });
+  const onKey = e => { if (e.key === 'Escape') modal.querySelector('.livetv-modal-close')?.click(); };
+  document.addEventListener('keydown', onKey);
+  new MutationObserver((_, mo) => { if (!document.body.contains(modal)) { document.removeEventListener('keydown', onKey); modal._hls?.destroy?.(); mo.disconnect(); } }).observe(document.body, {childList: true});
+  requestAnimationFrame(() => modal.classList.add('open'));
+  modal.querySelector('.livetv-modal-close').focus();
   const video = modal.querySelector('#livetv-video');
   const status = modal.querySelector('#livetv-status');
   const tryHls = () => {
@@ -1089,17 +1225,22 @@ async function route() {
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const parts = path.split('/').filter(Boolean);
   const params = new URLSearchParams(query);
-  const section = parts[0] || 'home';
-  $$('[data-nav]').forEach(a => a.toggleAttribute('aria-current', a.dataset.nav === section));
+  const part = parts[0] || 'home';
+  $$('[data-nav]').forEach(a => a.toggleAttribute('aria-current', a.dataset.nav === part));
   document.title = 'LOVELL';
   window.scrollTo(0, 0);
-  if (section === 'izle' && /^(tv|movie|al)$/.test(parts[1]) && /^\d+$/.test(parts[2])) await viewWatch(v, parts[1], parts[2], params);
-  else if (section === 'kesfet') await viewBrowse(v, 'tv', params);
-  else if (section === 'filmler') await viewBrowse(v, 'movie', params);
-  else if (section === 'listem') viewList();
-  else if (section === 'bilgisayarim') await viewLibrary(v);
+  // Canlı TV kendi temasıyla açılır; diğer sayfalarda seçili bölümün temasına dönülür.
+  const live = part === 'canli';
+  document.documentElement.dataset.section = live ? 'livetv' : section;
+  syncTabs(live ? 'livetv' : section);
+  if (part === 'izle' && /^(tv|movie|al)$/.test(parts[1]) && /^\d+$/.test(parts[2])) await viewWatch(v, parts[1], parts[2], params);
+  else if (live) await viewLiveTV(v);
+  else if (part === 'kesfet') await viewBrowse(v, 'tv', params);
+  else if (part === 'filmler') await viewBrowse(v, 'movie', params);
+  else if (part === 'listem') viewList();
+  else if (part === 'bilgisayarim') await viewLibrary(v);
   else await viewHome(v);
-  if (v === routeId) main.focus({preventScroll: true});
+  if (v === routeId) { main.focus({preventScroll: true}); pageEnter(); }
 }
 // Eski adresleri (#watch?type=tv&id=1) yeni biçime çevir.
 if (/^#watch\?/.test(location.hash)) { const p = new URLSearchParams(location.hash.split('?')[1]); location.replace(`#/izle/${p.get('type') === 'movie' ? 'movie' : 'tv'}/${p.get('id')}`); }
@@ -1108,17 +1249,21 @@ window.addEventListener('hashchange', route);
 window.addEventListener('pagehide', destroyPlayer);
 updateCount();
 // Bölüm değiştirici: tema, menü, türler ve içerik birlikte değişir.
-$$('.tab-btn').forEach(b => b.addEventListener('click', async () => {
-  if (b.dataset.tab === 'livetv') { viewLiveTV(++routeId); return; }
-  if (b.dataset.tab === section) return;
-  setSection(b.dataset.tab);
-  if ($('#search-dialog').open) { si.dispatchEvent(new Event('input')); }
-  await loadGenres();
+$$('.tab-btn').forEach(b => b.addEventListener('click', async ev => {
+  const tab = b.dataset.tab;
   const [path, query = ''] = location.hash.replace(/^#\/?/, '').split('?');
   const part = path.split('/').filter(Boolean)[0] || 'home';
-  // İzleme sayfasından ya da bölüme özgü bir filtreden ayrılıp yeni bölümün ana sayfasına git.
-  if (part === 'izle' || (query && /tur=/.test(query))) location.hash = part === 'izle' ? '#/' : `#/${part}`;
-  else route();
+  if (tab === 'livetv') { if (part !== 'canli') withTransition(ev, () => { location.hash = '#/canli'; }); return; }
+  if (tab === section && part !== 'canli') return;
+  await withTransition(ev, async () => {
+    setSection(tab);
+    if ($('#search-dialog').open) { si.dispatchEvent(new Event('input')); }
+    await loadGenres();
+    // İzleme / Canlı TV sayfasından ya da bölüme özgü bir filtreden ayrılıp yeni bölüme git.
+    if (part === 'izle' || part === 'canli') location.hash = '#/';
+    else if (query && /tur=/.test(query)) location.hash = `#/${part}`;
+    else await route();
+  });
 }));
 setSection(section);
 // Film & Dizi bölümünde üst çubuk vitrinin üstünde şeffaf durur, kaydırınca koyulaşır.
