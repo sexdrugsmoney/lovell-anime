@@ -6,6 +6,145 @@ import offlineEpisodes from '../src/data/offline-episodes.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
 
+// ---- CloseLoad (filmmakinesi.to) — Worker üzerinden TR Dublaj HLS ----
+function packedUnpack(packed) {
+  try {
+    const m = packed.match(/\(function\(p,a,c,k,e,(?:d|r)\)\{([\s\S]+?)\}\('([\s\S]+?)',\s*(\d+),\s*(\d+),\s*'([\s\S]+?)'\.split\('\|'\)/);
+    if (!m) return packed;
+    let [,, p,, a, k] = m;
+    a = parseInt(a, 10);
+    k = k.split('|');
+    const e = (c) => c ? (c < a ? '' : e(Math.floor(c / a))) + ((c %= a) > 35 ? String.fromCharCode(c + 29) : c.toString(36)) : c;
+    for (let i = k.length - 1; i >= 0; i--) {
+      if (k[i]) p = p.replace(new RegExp(`\\b${e(i)}\\b`, 'g'), k[i]);
+    }
+    return p;
+  } catch { return packed; }
+}
+
+function closeloadDecode(b64) {
+  try {
+    // decode → reverse bytes → decode → split("|")[1]
+    const buf1 = atob(b64);
+    const reversed = buf1.split('').reverse().join('');
+    const buf2 = atob(reversed);
+    return buf2.split('|')[1] || null;
+  } catch { return null; }
+}
+
+async function fetchCloseLoad(tmdbId, env) {
+  const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36';
+  const FM_BASE = 'https://filmmakinesi.to';
+  const CL_BASE = 'https://closeload.filmmakinesi.to';
+
+  // 1. filmmakinesi.to'dan film sayfasını ara — lema/v1 API
+  const searchRes = await fetch(`${FM_BASE}/lema/v1/search?tmdb=${tmdbId}&type=movie`, {
+    signal: AbortSignal.timeout(8000),
+    headers: {'User-Agent': UA, 'Accept': 'application/json', 'Referer': FM_BASE + '/'},
+    cf: {cacheTtl: 3600, cacheEverything: false},
+  });
+
+  let videoId = null;
+  if (searchRes.ok) {
+    const data = await searchRes.json().catch(() => null);
+    videoId = data?.closeload_id || data?.video_id || data?.embed_id
+      || data?.data?.[0]?.closeload_id || data?.results?.[0]?.closeload_id
+      || data?.film?.closeload_id;
+  }
+
+  // Eğer lema/v1 API çalışmıyorsa film sayfasından videoId çek
+  if (!videoId) {
+    // TMDB'den Türkçe adı al
+    const tmdbRes = await fetch(
+      `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=500330721680edb6d5f7f12ba7cd9023&language=tr-TR`,
+      {signal: AbortSignal.timeout(6000), cf: {cacheTtl: 3600, cacheEverything: true}}
+    );
+    if (!tmdbRes.ok) return [];
+    const tmdbData = await tmdbRes.json();
+    const title = (tmdbData.title || tmdbData.original_title || '').toLowerCase()
+      .replace(/[ığüşöçİĞÜŞÖÇ]/g, c => ({'i':'i','ı':'i','ğ':'g','ü':'u','ş':'s','ö':'o','ç':'c','İ':'i','Ğ':'g','Ü':'u','Ş':'s','Ö':'o','Ç':'c'}[c]||c))
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const year = (tmdbData.release_date || '').slice(0,4);
+
+    // filmmakinesi.to'da slug tahmin et: {title}-izle-{year}-fm{id}
+    // Önce arama sayfasını dene
+    const fmSearchRes = await fetch(`${FM_BASE}/?s=${encodeURIComponent(tmdbData.title || '')}`, {
+      signal: AbortSignal.timeout(8000),
+      headers: {'User-Agent': UA, 'Referer': FM_BASE + '/'},
+    });
+    if (fmSearchRes.ok) {
+      const html = await fmSearchRes.text();
+      // closeload embed URL'sini doğrudan HTML'den çıkar
+      const clMatch = html.match(/closeload\.filmmakinesi\.to\/video\/embed\/([A-Za-z0-9]+)/);
+      if (clMatch) videoId = clMatch[1];
+    }
+  }
+
+  if (!videoId) return [];
+
+  // 2. CloseLoad embed sayfasını GET ile çek
+  const embedUrl = `${CL_BASE}/video/embed/${videoId}/ah/`;
+  const getRes = await fetch(embedUrl, {
+    signal: AbortSignal.timeout(8000),
+    headers: {
+      'User-Agent': UA,
+      'Referer': FM_BASE + '/',
+      'Accept': 'text/html',
+      'sec-fetch-dest': 'iframe',
+      'sec-fetch-mode': 'navigate',
+      'sec-fetch-site': 'same-site',
+    },
+  });
+  if (!getRes.ok) return [];
+  const getHtml = await getRes.text();
+
+  // 3. Hash çıkar
+  const hashMatch = getHtml.match(/var\s+\w+\s*=\s*["']([a-f0-9]{32})["']/i)
+    || getHtml.match(/["']([a-f0-9]{32})["']/);
+  if (!hashMatch) return [];
+  const hash = hashMatch[1];
+
+  // 4. POST → packed JS
+  const postRes = await fetch(embedUrl, {
+    signal: AbortSignal.timeout(8000),
+    method: 'POST',
+    headers: {
+      'User-Agent': UA,
+      'Origin': CL_BASE,
+      'Referer': embedUrl,
+      'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8',
+      'X-Requested-With': 'XMLHttpRequest',
+      'sec-fetch-dest': 'empty',
+      'sec-fetch-mode': 'same-origin',
+      'sec-fetch-site': 'same-origin',
+    },
+    body: `hash=${hash}`,
+  });
+  if (!postRes.ok) return [];
+  const postHtml = await postRes.text();
+
+  // 5. Packed JS unpack
+  const scriptMatch = postHtml.match(/eval\(function\(p,a,c,k,e,(?:d|r)\)[\s\S]+?\)\)/);
+  if (!scriptMatch) return [];
+  const unpacked = packedUnpack(scriptMatch[0]);
+
+  // 6. Base64 data çıkar ve decode et
+  const dataMatch = unpacked.match(/return result\}[^(]*\(["']([A-Za-z0-9+/=]{20,})["']\)/)
+    || unpacked.match(/\(["']([A-Za-z0-9+/=]{20,})["']\)/);
+  if (!dataMatch) return [];
+
+  const m3u8Url = closeloadDecode(dataMatch[1]);
+  if (!m3u8Url || !m3u8Url.startsWith('http')) return [];
+
+  return [{
+    name: 'FilmMakinesi (TR Dublaj)',
+    origin: 'closeload',
+    url: m3u8Url,
+    type: 'hls',
+    subtitles: [],
+  }];
+}
+
 // ---- Embed sağlayıcıları (iframe — kurulum gerektirmez) ----
 function buildEmbeds(kind, id, alId, season, episode, opts = {}) {
   const color = (opts.brandColor || 'e4202b').replace('#', '');
@@ -370,7 +509,15 @@ async function api(url, env) {
       } catch { /* timeout — embed'lerle devam */ }
     }
 
-    return json({sources: [...sources, ...vidRockSources, ...anthologySources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
+    // CloseLoad (filmmakinesi.to) — Worker üzerinden direkt fetch (Cloudflare IP'si bloke edilmez)
+    let closeloadSources = [];
+    if (kind === 'movie') {
+      try {
+        closeloadSources = await fetchCloseLoad(id, env);
+      } catch { /* hata — diğer kaynaklarla devam */ }
+    }
+
+    return json({sources: [...sources, ...vidRockSources, ...anthologySources, ...closeloadSources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
   }
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);
