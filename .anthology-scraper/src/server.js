@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle'] });
+  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam'] });
 });
 
 // ---- TMDB helpers ----
@@ -1118,6 +1118,170 @@ app.get('/api/filmmakinesi', async (req, res) => {
   }
 });
 
+// ---- FilmizleBabam ----
+const FILMIZLEBABAM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36';
+
+async function filmizlebabamFetchPage(url, referer) {
+  const res = await fetch(url, {
+    signal: AbortSignal.timeout(12000),
+    redirect: 'follow',
+    headers: {
+      'User-Agent': FILMIZLEBABAM_UA,
+      'Referer': referer || 'https://www.filmizlebabam.com/',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
+    },
+  });
+  if (!res.ok) throw new Error(`filmizlebabam HTTP ${res.status} for ${url}`);
+  return res.text();
+}
+
+async function filmizlebabamExtractToken(html) {
+  const m = html.match(/data-pv=["']([A-Za-z0-9_-]+)["']/);
+  return m ? m[1] : null;
+}
+
+async function filmizlebabamExtractIframe(html) {
+  const m = html.match(/<iframe[^>]+src=["'](https?:\/\/[^"']+)["']/i);
+  return m ? m[1] : null;
+}
+
+async function pilavyerplayResolve(token, pageUrl) {
+  const endpoints = [
+    { method: 'GET',  url: `https://pilavyerplay.top/api/${token}`,         body: null,                                      ct: null },
+    { method: 'POST', url: 'https://pilavyerplay.top/api/source',           body: `token=${encodeURIComponent(token)}`,       ct: 'application/x-www-form-urlencoded' },
+    { method: 'GET',  url: `https://pilavyerplay.top/api/source/${token}`,  body: null,                                      ct: null },
+    { method: 'POST', url: 'https://pilavyerplay.top/source',               body: `r=${encodeURIComponent(pageUrl)}&token=${encodeURIComponent(token)}`, ct: 'application/x-www-form-urlencoded' },
+  ];
+
+  for (const ep of endpoints) {
+    try {
+      const opts = {
+        method: ep.method,
+        signal: AbortSignal.timeout(8000),
+        headers: {
+          'User-Agent': FILMIZLEBABAM_UA,
+          'Referer': 'https://pilavyerplay.top/',
+          'Origin': 'https://pilavyerplay.top',
+          'Accept': 'application/json, text/plain, */*',
+        },
+      };
+      if (ep.body) {
+        opts.body = ep.body;
+        opts.headers['Content-Type'] = ep.ct;
+      }
+      const r = await fetch(ep.url, opts);
+      if (!r.ok) continue;
+      const text = await r.text();
+      // m3u8 URL ara
+      const m3u8 = text.match(/(https?:\/\/[^"'\s,]+\.m3u8[^"'\s,]*)/i);
+      if (m3u8) return { url: m3u8[1], type: 'hls' };
+      // mp4 ara
+      const mp4 = text.match(/(https?:\/\/[^"'\s,]+\.mp4[^"'\s,]*)/i);
+      if (mp4) return { url: mp4[1], type: 'mp4' };
+      // JSON içinde url/file/src alanı ara
+      try {
+        const json = JSON.parse(text);
+        const candidates = [json.url, json.file, json.src, json.stream,
+          json.data?.url, json.data?.file, json.sources?.[0]?.url, json.sources?.[0]?.file];
+        for (const c of candidates) {
+          if (c && typeof c === 'string' && c.startsWith('http')) {
+            return { url: c, type: /\.m3u8/i.test(c) ? 'hls' : 'mp4' };
+          }
+        }
+      } catch { /* not json */ }
+    } catch { /* try next endpoint */ }
+  }
+  return null;
+}
+
+app.get('/api/filmizlebabam', async (req, res) => {
+  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `filmizlebabam:${tmdbId}:${type}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // 1. TMDB'den TR + orijinal başlık al
+    let tmdb;
+    if (type === 'movie') {
+      tmdb = await tmdbMovie(tmdbId);
+    } else {
+      tmdb = await tmdbTv(tmdbId);
+    }
+    const trTitle = tmdb.title || tmdb.name || '';
+    const origTitle = tmdb.original_title || tmdb.original_name || '';
+    if (!trTitle && !origTitle) throw new Error('TMDB başlık bulunamadı');
+
+    const slugTr = toSlug(trTitle);
+    const slugOrig = toSlug(origTitle);
+    const s = parseInt(season, 10);
+    const e = parseInt(episode, 10);
+
+    // 2. Denenecek URL'leri oluştur
+    let urlsToTry = [];
+    if (type === 'tv') {
+      if (slugTr)   urlsToTry.push(`https://www.filmizlebabam.com/bolum/${slugTr}-${s}-sezon-${e}-bolum/`);
+      if (slugOrig && slugOrig !== slugTr) urlsToTry.push(`https://www.filmizlebabam.com/bolum/${slugOrig}-${s}-sezon-${e}-bolum/`);
+    } else {
+      if (slugTr)   urlsToTry.push(`https://www.filmizlebabam.com/film/${slugTr}-izle/`);
+      if (slugOrig && slugOrig !== slugTr) urlsToTry.push(`https://www.filmizlebabam.com/film/${slugOrig}-izle/`);
+    }
+
+    let pageHtml = null;
+    let pageUrl = null;
+
+    // 3. URL'leri sırayla dene
+    for (const url of urlsToTry) {
+      try {
+        pageHtml = await filmizlebabamFetchPage(url, 'https://www.filmizlebabam.com/');
+        pageUrl = url;
+        break;
+      } catch { /* try next */ }
+    }
+
+    if (!pageHtml) throw new Error('filmizlebabam sayfa bulunamadı \u2014 t\u00fcm URL\u2019ler ba\u015far\u0131s\u0131z');
+
+    // 4. data-pv token'ını çıkar
+    const token = await filmizlebabamExtractToken(pageHtml);
+
+    let sources = [];
+
+    if (token) {
+      // 5. pilavyerplay API'sini çağır
+      const resolved = await pilavyerplayResolve(token, pageUrl);
+      if (resolved) {
+        sources.push({
+          url: resolved.url,
+          quality: '1080p',
+          name: 'FilmizleBabam',
+          type: resolved.type,
+        });
+      }
+    }
+
+    // 6. Fallback: iframe src
+    if (sources.length === 0) {
+      const iframeSrc = await filmizlebabamExtractIframe(pageHtml);
+      if (iframeSrc) {
+        sources.push({
+          url: iframeSrc,
+          quality: '1080p',
+          name: 'FilmizleBabam (iframe)',
+          type: 'hls',
+        });
+      }
+    }
+
+    const result = { sources };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
 // ---- All (parallel) ----
 app.get('/api/all', async (req, res) => {
   const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
@@ -1147,6 +1311,7 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/webteizle?${params}&type=tv`),
       fetchSource(`${base}/api/lovefilmizle?${params}&type=tv`),
       fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
+      fetchSource(`${base}/api/filmizlebabam?${params}&type=tv`),
     ]);
     allSources = results.flat();
   } else {
@@ -1159,6 +1324,7 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/webteizle?${tmdbParam}&type=movie`),
       fetchSource(`${base}/api/lovefilmizle?${tmdbParam}&type=movie`),
       fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=movie`),
+      fetchSource(`${base}/api/filmizlebabam?${tmdbParam}&type=movie`),
     ]);
     allSources = results.flat();
   }
