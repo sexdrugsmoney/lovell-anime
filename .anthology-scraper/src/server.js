@@ -1100,6 +1100,24 @@ app.get('/api/lovefilmizle', async (req, res) => {
   }
 });
 
+// ---- FilmMakinesi Proxy ----
+app.get('/api/filmmakinesi', async (req, res) => {
+  const url = process.env.FILMMAKINESI_SCRAPER_URL;
+  if (!url) return res.json({ sources: [], error: 'FILMMAKINESI_SCRAPER_URL ayarlanmamis' });
+  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  try {
+    const r = await fetch(
+      `${url}/api/stream?tmdbId=${encodeURIComponent(tmdbId)}&type=${encodeURIComponent(type)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`,
+      { signal: AbortSignal.timeout(30000) }
+    );
+    const data = await r.json();
+    res.json(data);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
 // ---- All (parallel) ----
 app.get('/api/all', async (req, res) => {
   const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
@@ -1128,6 +1146,7 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/dizimom?${params}`),
       fetchSource(`${base}/api/webteizle?${params}&type=tv`),
       fetchSource(`${base}/api/lovefilmizle?${params}&type=tv`),
+      fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
     ]);
     allSources = results.flat();
   } else {
@@ -1139,6 +1158,7 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/closeload?${tmdbParam}&type=movie`),
       fetchSource(`${base}/api/webteizle?${tmdbParam}&type=movie`),
       fetchSource(`${base}/api/lovefilmizle?${tmdbParam}&type=movie`),
+      fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=movie`),
     ]);
     allSources = results.flat();
   }
