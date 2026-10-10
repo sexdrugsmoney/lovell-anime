@@ -270,6 +270,46 @@ function buildEmbeds(kind, id, alId, season, episode, opts = {}) {
     add('streamflizo', 'StreamFlizo', sfBase);
   }
 
+  // 2Embed — ücretsiz, TMDB/IMDB
+  if (kind !== 'al') {
+    const twoBase = kind === 'movie'
+      ? `https://www.2embed.stream/embed/movie/${id}`
+      : `https://www.2embed.stream/embed/tv/${id}/${season}/${episode}`;
+    add('2embed', '2Embed', twoBase);
+  }
+
+  // HnEmbed — 2embed türevi
+  if (kind !== 'al') {
+    const hnBase = kind === 'movie'
+      ? `https://hnembed.cc/embed/movie/${id}`
+      : `https://hnembed.cc/embed/tv/${id}/${season}/${episode}`;
+    add('hnembed', 'HnEmbed', hnBase);
+  }
+
+  // VidZen — 9 failover server
+  if (kind !== 'al') {
+    const vzBase = kind === 'movie'
+      ? `https://vidzen.fun/movie/${id}?autoPlay=true`
+      : `https://vidzen.fun/tv/${id}/${season}/${episode}?autoPlay=true`;
+    add('vidzen', 'VidZen', vzBase);
+  }
+
+  // MyCineBy — HLS/MP4 çok kaynak
+  if (kind !== 'al') {
+    const mcBase = kind === 'movie'
+      ? `https://mycineby.cc/embed/movie/${id}?color=e4202b&autoplay=true`
+      : `https://mycineby.cc/embed/tv/${id}/${season}/${episode}?color=e4202b&autoplay=true`;
+    add('mycineby', 'MyCineBy', mcBase);
+  }
+
+  // AutoEmbed — çok kaynaklı
+  if (kind !== 'al') {
+    const aeBase = kind === 'movie'
+      ? `https://autoembed.co/movie/tmdb/${id}`
+      : `https://autoembed.co/tv/tmdb/${id}-${season}-${episode}`;
+    add('autoembed', 'AutoEmbed', aeBase);
+  }
+
   return list;
 }
 let configured = false;
@@ -513,7 +553,10 @@ async function api(url, env) {
     let closeloadSources = [];
     if (kind === 'movie') {
       try {
-        closeloadSources = await fetchCloseLoad(id, env);
+        closeloadSources = await Promise.race([
+          fetchCloseLoad(id, env),
+          new Promise(resolve => setTimeout(() => resolve([]), 10000)),
+        ]);
       } catch { /* hata — diğer kaynaklarla devam */ }
     }
 
