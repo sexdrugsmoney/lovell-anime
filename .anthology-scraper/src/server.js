@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload'] });
+  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle'] });
 });
 
 // ---- TMDB helpers ----
@@ -70,6 +70,55 @@ async function tmdbMovieWithExternal(tmdbId) {
   const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
   if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
   return res.json();
+}
+
+// ---- VidMoly extractor ----
+async function extractVidMoly(embedUrl, referer) {
+  const normalizedUrl = embedUrl
+    .replace('//vidmoly.to/', '//vidmoly.biz/')
+    .replace('//vidmoly.net/', '//vidmoly.biz/')
+    .replace('//vidmoly.com/', '//vidmoly.biz/');
+
+  const res = await fetch(normalizedUrl, {
+    signal: AbortSignal.timeout(10000),
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Referer': referer || 'https://webteizle.info/',
+    },
+  });
+  if (!res.ok) return null;
+  const html = await res.text();
+
+  // Pattern 1: file: "https://...m3u8"
+  const m1 = html.match(/file\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i);
+  if (m1) return { url: m1[1], referer: 'https://vidmoly.biz/' };
+
+  // Pattern 2: sources:[{file:"..."}]
+  const m2 = html.match(/sources\s*:\s*\[\s*\{[^}]*file\s*:\s*["'](https?:\/\/[^"']+)["']/i);
+  if (m2) return { url: m2[1], referer: 'https://vidmoly.biz/' };
+
+  return null;
+}
+
+// ---- Pixeldrain extractor ----
+function extractPixeldrain(html) {
+  const m = html.match(/pixeldrain\.com\/(?:u|l)\/([A-Za-z0-9]+)/);
+  if (!m) return null;
+  return `https://pixeldrain.com/api/file/${m[1]}`;
+}
+
+// ---- Turkish slug helper ----
+function toSlug(text) {
+  return text
+    .toLowerCase()
+    .replace(/ğ/g, 'g')
+    .replace(/ü/g, 'u')
+    .replace(/ş/g, 's')
+    .replace(/ı/g, 'i')
+    .replace(/ö/g, 'o')
+    .replace(/ç/g, 'c')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
 }
 
 // ---- AnimeciX ----
@@ -795,6 +844,262 @@ app.get('/api/closeload', async (req, res) => {
   }
 });
 
+// ---- WebteIzle ----
+app.get('/api/webteizle', async (req, res) => {
+  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `webteizle:${tmdbId}:${type}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  const WEBT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36';
+  const WEBT_HEADERS = {
+    'User-Agent': WEBT_UA,
+    'Accept': 'text/html,application/xhtml+xml',
+    'Accept-Language': 'tr-TR,tr;q=0.9',
+    'Referer': 'https://webteizle.info/',
+  };
+
+  try {
+    // 1. TMDB'den TR + orijinal başlık al
+    let tmdb;
+    if (type === 'movie') {
+      tmdb = await tmdbMovie(tmdbId);
+    } else {
+      tmdb = await tmdbTv(tmdbId);
+    }
+    const trTitle = tmdb.title || tmdb.name || '';
+    const origTitle = tmdb.original_title || tmdb.original_name || '';
+
+    const slugTr = toSlug(trTitle);
+    const slugEn = toSlug(origTitle);
+
+    // 2. URL'leri dene
+    const urlsToTry = [
+      `https://webteizle.info/izle/dublaj/${slugTr}`,
+      `https://webteizle.info/izle/altyazi/${slugTr}`,
+      `https://webteizle.info/izle/dublaj/${slugEn}`,
+      `https://webteizle.info/izle/altyazi/${slugEn}`,
+    ].filter(u => !u.endsWith('/'));
+
+    let filmId = null;
+    let langHint = 'tr-dub';
+
+    for (const tryUrl of urlsToTry) {
+      try {
+        const r = await fetch(tryUrl, { signal: AbortSignal.timeout(10000), headers: WEBT_HEADERS });
+        if (!r.ok) continue;
+        const html = await r.text();
+        const m = html.match(/button[^>]+id=["']wip["'][^>]+data-id=["'](\d+)["']/) ||
+                  html.match(/data-id=["'](\d+)["']/);
+        if (m) {
+          filmId = m[1];
+          if (tryUrl.includes('/altyazi/')) langHint = 'tr-sub';
+          break;
+        }
+      } catch {
+        // try next
+      }
+    }
+
+    // 3. Fallback: POST arama
+    if (!filmId) {
+      const searchTitle = trTitle || origTitle;
+      const searchRes = await fetch('https://webteizle.info/ajax/arama.asp', {
+        method: 'POST',
+        signal: AbortSignal.timeout(10000),
+        headers: {
+          ...WEBT_HEADERS,
+          'Content-Type': 'application/x-www-form-urlencoded',
+          'X-Requested-With': 'XMLHttpRequest',
+        },
+        body: new URLSearchParams({ q: searchTitle }).toString(),
+      });
+      if (searchRes.ok) {
+        const searchData = await searchRes.json().catch(() => null);
+        const firstUrl = searchData?.data?.results?.filmler?.results?.[0]?.url;
+        if (firstUrl) {
+          const pageRes = await fetch(firstUrl.startsWith('http') ? firstUrl : `https://webteizle.info${firstUrl}`, {
+            signal: AbortSignal.timeout(10000),
+            headers: WEBT_HEADERS,
+          });
+          if (pageRes.ok) {
+            const pageHtml = await pageRes.text();
+            const m = pageHtml.match(/button[^>]+id=["']wip["'][^>]+data-id=["'](\d+)["']/) ||
+                      pageHtml.match(/data-id=["'](\d+)["']/);
+            if (m) filmId = m[1];
+          }
+        }
+      }
+    }
+
+    if (!filmId) throw new Error('WebteIzle filmId bulunamadı');
+
+    // 4. Embed listesini al
+    const altRes = await fetch('https://webteizle.info/ajax/dataAlternatif3.asp', {
+      method: 'POST',
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        ...WEBT_HEADERS,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: new URLSearchParams({
+        filmid: filmId,
+        dil: '0',
+        s: season,
+        b: episode,
+        bot: '0',
+      }).toString(),
+    });
+    if (!altRes.ok) throw new Error(`WebteIzle alternatif HTTP ${altRes.status}`);
+    const altData = await altRes.json().catch(() => null);
+    const embedList = altData?.data || altData?.results || altData || [];
+    const embedItems = Array.isArray(embedList) ? embedList : Object.values(embedList);
+
+    if (embedItems.length === 0) throw new Error('WebteIzle embed listesi boş');
+
+    // 5. Her embed için iframe src al, VidMoly ise m3u8 çıkar
+    const sources = [];
+    for (const item of embedItems.slice(0, 5)) {
+      try {
+        const embedId = item.id || item.embed_id;
+        if (!embedId) continue;
+
+        const embedRes = await fetch('https://webteizle.info/ajax/dataEmbed.asp', {
+          method: 'POST',
+          signal: AbortSignal.timeout(10000),
+          headers: {
+            ...WEBT_HEADERS,
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'X-Requested-With': 'XMLHttpRequest',
+          },
+          body: new URLSearchParams({ id: embedId }).toString(),
+        });
+        if (!embedRes.ok) continue;
+        const embedData = await embedRes.json().catch(() => null);
+        const iframeSrc = embedData?.iframe || embedData?.url || embedData?.src || embedData?.data;
+        if (!iframeSrc || typeof iframeSrc !== 'string') continue;
+
+        if (/vidmoly/i.test(iframeSrc)) {
+          const extracted = await extractVidMoly(iframeSrc, 'https://webteizle.info/');
+          if (extracted) {
+            sources.push({
+              url: extracted.url,
+              quality: '1080p',
+              name: 'WebteIzle (TR Dublaj)',
+              type: 'hls',
+              lang: langHint,
+              referer: extracted.referer,
+            });
+          }
+        }
+      } catch {
+        // try next embed
+      }
+    }
+
+    const result = { sources };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
+// ---- LoveFilmIzle ----
+app.get('/api/lovefilmizle', async (req, res) => {
+  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `lovefilmizle:${tmdbId}:${type}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // 1. IMDb ID al
+    let tmdb;
+    if (type === 'movie') {
+      tmdb = await tmdbMovieWithExternal(tmdbId);
+    } else {
+      tmdb = await tmdbTvWithExternal(tmdbId);
+    }
+    const imdbId = tmdb.external_ids?.imdb_id;
+    if (!imdbId) throw new Error('IMDb ID bulunamadı');
+
+    // 2. WordPress REST API
+    const wpRes = await fetch(
+      `https://lovefilmizle.net/wp-json/wp/v2/posts?search=${encodeURIComponent(imdbId)}&per_page=1`,
+      {
+        signal: AbortSignal.timeout(10000),
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+          'Accept': 'application/json',
+          'Referer': 'https://lovefilmizle.net/',
+        },
+      }
+    );
+    if (!wpRes.ok) throw new Error(`LoveFilmIzle WP API HTTP ${wpRes.status}`);
+    const wpData = await wpRes.json().catch(() => []);
+    if (!Array.isArray(wpData) || wpData.length === 0) throw new Error('LoveFilmIzle içerik bulunamadı');
+
+    const post = wpData[0];
+    const content = post?.content?.rendered || '';
+
+    // 3. Dil tespiti
+    let lang = 'tr';
+    const taxonomies = post?.dil || post?.categories || [];
+    const taxStr = JSON.stringify(taxonomies).toLowerCase();
+    if (taxStr.includes('turkce-dublaj') || taxStr.includes('dublaj') || content.includes('dublaj')) {
+      lang = 'tr-dub';
+    } else if (taxStr.includes('turkce-altyazili') || taxStr.includes('altyazili') || content.includes('altyazili')) {
+      lang = 'tr-sub';
+    }
+
+    // 4. VidMoly URL'sini çıkar
+    let vidmolyUrl = null;
+    const m1 = content.match(/src=["\']\/bemoly\/bemoly\.php\?url=(https:\/\/vidmoly[^&"']+)/);
+    const m2 = content.match(/src=["'](https:\/\/vidmoly[^"']+)/);
+    if (m1) vidmolyUrl = decodeURIComponent(m1[1]);
+    else if (m2) vidmolyUrl = m2[1];
+
+    const sources = [];
+
+    if (vidmolyUrl) {
+      const extracted = await extractVidMoly(vidmolyUrl, 'https://lovefilmizle.net/');
+      if (extracted) {
+        sources.push({
+          url: extracted.url,
+          quality: '1080p',
+          name: 'LoveFilmIzle (TR)',
+          type: 'hls',
+          lang,
+          referer: extracted.referer,
+        });
+      }
+    }
+
+    // 5. Fallback: Pixeldrain
+    if (sources.length === 0) {
+      const pdUrl = extractPixeldrain(content);
+      if (pdUrl) {
+        sources.push({
+          url: pdUrl,
+          quality: '1080p',
+          name: 'LoveFilmIzle (Pixeldrain)',
+          type: 'mp4',
+          lang,
+        });
+      }
+    }
+
+    const result = { sources };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
 // ---- All (parallel) ----
 app.get('/api/all', async (req, res) => {
   const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
@@ -821,6 +1126,8 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/sonanime?${params}`),
       fetchSource(`${base}/api/sinewix?${params}&type=tv`),
       fetchSource(`${base}/api/dizimom?${params}`),
+      fetchSource(`${base}/api/webteizle?${params}&type=tv`),
+      fetchSource(`${base}/api/lovefilmizle?${params}&type=tv`),
     ]);
     allSources = results.flat();
   } else {
@@ -830,6 +1137,8 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/hdfilmcehennemi?${tmdbParam}`),
       fetchSource(`${base}/api/sinewix?${tmdbParam}&type=movie`),
       fetchSource(`${base}/api/closeload?${tmdbParam}&type=movie`),
+      fetchSource(`${base}/api/webteizle?${tmdbParam}&type=movie`),
+      fetchSource(`${base}/api/lovefilmizle?${tmdbParam}&type=movie`),
     ]);
     allSources = results.flat();
   }
