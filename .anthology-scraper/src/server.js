@@ -727,9 +727,31 @@ app.get('/api/diziyou', async (req, res) => {
 
     if (!foundLink) throw new Error('DiziYou dizi bulunamadı');
 
-    // 3. Bölüm sayfasına git
-    const slug = foundLink.split('/').filter(Boolean).pop();
-    const epUrl = `${DIZIYOU_BASE}/${slug}-${season}-sezon-${episode}-bolum/`;
+    // 3. Dizi sayfasına git ve bölüm linkini bul
+    const showRes = await fetch(foundLink, { signal: AbortSignal.timeout(10000), headers });
+    let epUrl = null;
+    if (showRes.ok) {
+      const showHtml = await showRes.text();
+      const $show = cheerio.load(showHtml);
+      // Sezon/bölüm linklerini ara
+      $show('a[href*="-sezon-"][href*="-bolum"]').each((_, el) => {
+        const href = $show(el).attr('href') || '';
+        const s = String(season), e = String(episode);
+        if (href.includes(`-${s}-sezon-${e}-bolum`) || href.includes(`-sezon-${s}-bolum-${e}`)) {
+          epUrl = href; return false;
+        }
+      });
+      // Fallback: slug + season/episode pattern
+      if (!epUrl) {
+        const slug = foundLink.split('/').filter(Boolean).pop();
+        // Önce doğrudan dizi adı slug'ını dene
+        const slugBase = slug.replace(/\d+$/, ''); // reacher2 → reacher
+        epUrl = `${DIZIYOU_BASE}/${slugBase}-${season}-sezon-${episode}-bolum/`;
+      }
+    } else {
+      const slug = foundLink.split('/').filter(Boolean).pop().replace(/\d+$/, '');
+      epUrl = `${DIZIYOU_BASE}/${slug}-${season}-sezon-${episode}-bolum/`;
+    }
     const epRes = await fetch(epUrl, { signal: AbortSignal.timeout(10000), headers });
     if (!epRes.ok) throw new Error(`DiziYou bölüm sayfası HTTP ${epRes.status}`);
     const epHtml = await epRes.text();
