@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam'] });
+  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam', 'diziyou'] });
 });
 
 // ---- TMDB helpers ----
@@ -673,7 +673,103 @@ app.get('/api/dizimom', async (req, res) => {
   }
 });
 
-// ---- CloseLoad (filmmakinesi.to) ----
+// ---- DiziYou — storage.diziyou.one direkt HLS ----
+const DIZIYOU_BASE = 'https://www.diziyou.one';
+const DIZIYOU_STORAGE = 'https://storage.diziyou.one';
+const DIZIYOU_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36';
+
+app.get('/api/diziyou', async (req, res) => {
+  const { tmdbId, season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `diziyou:${tmdbId}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // 1. TMDB'den başlık al
+    const tmdb = await tmdbTv(tmdbId);
+    const trTitle = tmdb.name || '';
+    const origTitle = tmdb.original_name || '';
+
+    const headers = {
+      'User-Agent': DIZIYOU_UA,
+      'Referer': DIZIYOU_BASE + '/',
+      'Accept': 'text/html,application/xhtml+xml',
+    };
+
+    // 2. Arama — TR başlık önce, sonra orijinal
+    let foundLink = null;
+    for (const q of [trTitle, origTitle].filter(Boolean)) {
+      const searchRes = await fetch(`${DIZIYOU_BASE}/?s=${encodeURIComponent(q)}`, {
+        signal: AbortSignal.timeout(10000), headers,
+      });
+      if (!searchRes.ok) continue;
+      const html = await searchRes.text();
+      const $ = cheerio.load(html);
+
+      const qLow = q.toLowerCase().trim();
+      let found = null;
+      $('.list-series a, .post-title a, #categorytitle a, .entry-title a').each((_, el) => {
+        const text = $(el).text().toLowerCase().replace('izle', '').trim();
+        const href = $(el).attr('href');
+        if (!href || href.includes('/kategori/')) return;
+        if (text === qLow || text.startsWith(qLow + ' ') || text.startsWith(qLow + ' (')) {
+          found = href; return false;
+        }
+      });
+      // fallback: ilk sonuç
+      if (!found) {
+        const first = $('.list-series a, .post-title a, .entry-title a').first().attr('href');
+        if (first && !first.includes('/kategori/')) found = first;
+      }
+      if (found) { foundLink = found; break; }
+    }
+
+    if (!foundLink) throw new Error('DiziYou dizi bulunamadı');
+
+    // 3. Bölüm sayfasına git
+    const slug = foundLink.split('/').filter(Boolean).pop();
+    const epUrl = `${DIZIYOU_BASE}/${slug}-${season}-sezon-${episode}-bolum/`;
+    const epRes = await fetch(epUrl, { signal: AbortSignal.timeout(10000), headers });
+    if (!epRes.ok) throw new Error(`DiziYou bölüm sayfası HTTP ${epRes.status}`);
+    const epHtml = await epRes.text();
+
+    // 4. #diziyouPlayer src'den itemId çıkar
+    const $ = cheerio.load(epHtml);
+    const playerSrc = $('#diziyouPlayer').attr('src') || '';
+    if (!playerSrc) throw new Error('DiziYou player bulunamadı');
+
+    const itemId = playerSrc.split('/').pop().replace('.html', '').split('?')[0];
+    const dyHeaders = { Referer: DIZIYOU_BASE + '/' };
+    const sources = [];
+
+    // 5. Türkçe Altyazı
+    sources.push({
+      url: `${DIZIYOU_STORAGE}/episodes/${itemId}/play.m3u8`,
+      quality: '1080p',
+      name: 'DiziYou (TR Altyazı)',
+      type: 'hls',
+      lang: 'tr-sub',
+    });
+
+    // 6. Türkçe Dublaj (varsa _tr suffix)
+    if (epHtml.includes('turkceDublaj') || epHtml.includes('Türkçe Dublaj')) {
+      sources.push({
+        url: `${DIZIYOU_STORAGE}/episodes/${itemId}_tr/play.m3u8`,
+        quality: '1080p',
+        name: 'DiziYou (TR Dublaj)',
+        type: 'hls',
+        lang: 'tr-dub',
+      });
+    }
+
+    const result = { sources };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
 // Akış: GET closeload.filmmakinesi.to/video/embed/{id}/tmdb-id={tmdbId}
 // → HTML → packed JS unpack → Base64 double decode → m3u8
 function getAndUnpack(packed) {
@@ -1312,6 +1408,7 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/lovefilmizle?${params}&type=tv`),
       fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
       fetchSource(`${base}/api/filmizlebabam?${params}&type=tv`),
+      fetchSource(`${base}/api/diziyou?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
     ]);
     allSources = results.flat();
   } else {
