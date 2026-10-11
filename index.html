@@ -22,8 +22,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Onest:wght@400;500;600;700&display=swap">
-<script>try{const d=document.documentElement,t=localStorage.getItem('lovell.theme');if(t)d.dataset.theme=t;const s=JSON.parse(localStorage.getItem('lovell.tab')||'"anime"');d.dataset.section=s==='media'||s==='movies'?'media':'anime'}catch{document.documentElement.dataset.section='anime'}</script>
-<link rel="stylesheet" href="/src/style.css?v=11">
+<script>try{const d=document.documentElement,t=localStorage.getItem('lovell.theme');if(t==='light'||t==='dark')d.dataset.theme=t;else if(t==='system'&&matchMedia('(prefers-color-scheme: light)').matches)d.dataset.theme='light';const s=JSON.parse(localStorage.getItem('lovell.tab')||'"anime"');d.dataset.section=s==='media'||s==='movies'?'media':'anime'}catch{document.documentElement.dataset.section='anime'}</script>
+<link rel="stylesheet" href="/src/style.css?v=12">
 </head>
 <body>
 <a class="skip" href="#main">İçeriğe geç</a>
@@ -53,6 +53,9 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
         <span id="search-label">Ara</span><kbd>/</kbd>
       </button>
+      <button class="icon-btn" id="settings-open" type="button" aria-label="Ayarlar" title="Ayarlar" aria-haspopup="dialog">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+      </button>
       <button class="icon-btn" id="theme" type="button" aria-label="Açık temaya geç">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path class="sun" d="M12 4V2m0 20v-2m8-8h2M2 12h2m13.7-5.7 1.4-1.4M4.9 19.1l1.4-1.4m11.4 0 1.4 1.4M4.9 4.9l1.4 1.4"/><circle class="sun" cx="12" cy="12" r="4"/><path class="moon" d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg>
       </button>
@@ -64,9 +67,21 @@
 
 <footer class="foot">
   <div class="foot-inner">
-    <p class="foot-brand"><img src="/public/mark.svg" alt="" width="28" height="28"> LOVELL</p>
-    <p><span id="foot-section"></span> Yayın platformu bilgileri JustWatch'tan gelir. Bu site TMDB API'sini kullanır ancak TMDB tarafından onaylanmış değildir.</p>
-    <p class="foot-status" id="data-status"></p>
+    <div class="foot-top">
+      <div class="foot-about">
+        <p class="foot-brand"><img src="/public/mark.svg" alt="" width="32" height="32"> LOVELL</p>
+        <p class="foot-tag">Anime, film, dizi ve canlı TV'yi tek yerde keşfet, listeni tut, kaldığın yerden devam et.</p>
+      </div>
+      <nav class="foot-links" aria-label="Alt bağlantılar">
+        <div><h3>Keşfet</h3><a href="#/" data-foot-tab="anime">Anime</a><a href="#/" data-foot-tab="media">Film &amp; Dizi</a><a href="#/canli">Canlı TV</a></div>
+        <div><h3>Kitaplık</h3><a href="#/listem">Listem</a><a href="#/listem?g=gecmis">İzleme geçmişi</a><a href="#/bilgisayarim" data-nav-local>Bilgisayarımda</a></div>
+        <div><h3>Yardım</h3><button type="button" class="foot-btn" data-open-settings>Ayarlar</button><button type="button" class="foot-btn" data-open-keys>Klavye kısayolları</button></div>
+      </nav>
+    </div>
+    <div class="foot-bottom">
+      <p><span id="foot-section"></span> Yayın platformu bilgileri JustWatch'tan gelir. Bu site TMDB API'sini kullanır ancak TMDB tarafından onaylanmış değildir.</p>
+      <p class="foot-status" id="data-status"></p>
+    </div>
   </div>
 </footer>
 
@@ -86,6 +101,6 @@
 
 <nav class="bottom-nav" id="bottom-nav" aria-label="Alt menü"></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="/src/main.js?v=11"></script>
+<script type="module" src="/src/main.js?v=12"></script>
 </body>
 </html>
