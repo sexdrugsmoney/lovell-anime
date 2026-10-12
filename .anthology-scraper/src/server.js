@@ -1,12 +1,14 @@
 import express from 'express';
 import fetch from 'node-fetch';
 import * as cheerio from 'cheerio';
+import crypto from 'node:crypto';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const TMDB_KEY = process.env.TMDB_API_KEY || '500330721680edb6d5f7f12ba7cd9023';
+const MIN = 60 * 1000;
 
-// ---- Simple LRU cache ----
+// ---- Simple LRU cache (girdi başına özel süre desteklenir) ----
 class LRUCache {
   constructor(max = 500, ttl = 3600000) {
     this.max = max;
@@ -22,14 +24,23 @@ class LRUCache {
     this.store.set(key, entry);
     return entry.value;
   }
-  set(key, value) {
+  set(key, value, ttl = this.ttl) {
     if (this.store.has(key)) this.store.delete(key);
     else if (this.store.size >= this.max) this.store.delete(this.store.keys().next().value);
-    this.store.set(key, { value, expires: Date.now() + this.ttl });
+    this.store.set(key, { value, expires: Date.now() + ttl });
   }
 }
 
-const cache = new LRUCache(500, 3600 * 1000);
+const cache = new LRUCache(1000, 3600 * 1000);
+const tmdbCache = new LRUCache(500, 24 * 3600 * 1000);
+
+// Başarısız sorgular 3 dakika boyunca önbellekte tutulur: aynı bölüm için her tıklamada
+// 10 saniyelik zaman aşımlarını yeniden beklemeyiz. Başarılı sonuçlar 1 saat kalır.
+function fail(res, cacheKey, e) {
+  const result = { sources: [], error: String(e?.message || e) };
+  if (cacheKey) cache.set(cacheKey, result, 3 * MIN);
+  return res.json(result);
+}
 
 // ---- CORS + JSON ----
 app.use((req, res, next) => {
@@ -40,37 +51,169 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam', 'ddizi', 'diziwatch', 'diziyou'] });
+  res.json({ status: 'ok', service: 'anthology-scraper', uptime: Math.round(process.uptime()), cache: cache.store.size, scrapers: ['animecix', 'sonanime', 'diziyou', 'stremio', 'anizium', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam', 'filmmakinesi', 'ddizi', 'diziwatch', 'diziyou'] });
 });
 
-// ---- TMDB helpers ----
-async function tmdbTv(tmdbId) {
-  const url = `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
-  return res.json();
+// ---- TMDB ----
+// Türkiye'deki bazı ağlar api.themoviedb.org'u engelliyor. Çağıran (LOVELL) başlığı zaten bildiği
+// için ?title=&original=&year=&imdb= ile gönderebilir; bu durumda TMDB'ye hiç gitmeyiz.
+// Gönderilmediyse iki resmî adres sırayla denenir ve sonuç 24 saat önbelleğe alınır.
+const HINTS = new Map(); // "tv:94605" -> {title, original, year, imdb}
+function setHint(kind, id, q) {
+  const title = String(q.title || '').slice(0, 200), original = String(q.original || '').slice(0, 200);
+  if (!title && !original) return;
+  if (HINTS.size > 2000) HINTS.delete(HINTS.keys().next().value);
+  HINTS.set(`${kind}:${id}`, { title, original, year: /^\d{4}$/.test(q.year || '') ? q.year : '', imdb: /^tt\d{5,10}$/.test(q.imdb || '') ? q.imdb : '' });
+}
+function fromHint(kind, h) {
+  const date = h.year ? `${h.year}-01-01` : '';
+  const ext = { imdb_id: h.imdb || undefined };
+  return kind === 'movie'
+    ? { title: h.title || h.original, original_title: h.original || h.title, release_date: date, imdb_id: h.imdb || undefined, external_ids: ext }
+    : { name: h.title || h.original, original_name: h.original || h.title, first_air_date: date, external_ids: ext };
+}
+async function tmdbFetch(kind, id, external) {
+  const key = `${kind}:${id}:${external ? 'x' : ''}`;
+  const hit = tmdbCache.get(key);
+  if (hit) return hit;
+  let lastErr;
+  for (const host of ['api.themoviedb.org', 'api.tmdb.org']) {
+    try {
+      const url = `https://${host}/3/${kind}/${id}?api_key=${TMDB_KEY}&language=tr-TR${external ? '&append_to_response=external_ids' : ''}`;
+      const res = await fetch(url, { signal: AbortSignal.timeout(7000) });
+      if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
+      const data = await res.json();
+      tmdbCache.set(key, data);
+      return data;
+    } catch (e) { lastErr = e; }
+  }
+  throw lastErr;
+}
+async function tmdbDetail(kind, id, external) {
+  const h = HINTS.get(`${kind}:${id}`);
+  const enough = h && (h.title || h.original) && (!external || h.imdb);
+  if (enough) return fromHint(kind, h);
+  try { return await tmdbFetch(kind, id, external); }
+  catch (e) { if (h && (h.title || h.original)) return fromHint(kind, h); throw e; }
+}
+const tmdbTv = id => tmdbDetail('tv', id, false);
+const tmdbMovie = id => tmdbDetail('movie', id, false);
+const tmdbTvWithExternal = id => tmdbDetail('tv', id, true);
+const tmdbMovieWithExternal = id => tmdbDetail('movie', id, true);
+
+// /api/* isteklerinde gelen başlık ipuçlarını kaydet (tmdbId + type ile eşlenir).
+app.use('/api', (req, _res, next) => {
+  const q = req.query;
+  if (q.tmdbId && /^\d{1,9}$/.test(String(q.tmdbId)) && (q.title || q.original)) {
+    const kind = q.type === 'movie' || /^\/(hdfilmcehennemi|closeload)/.test(req.path) ? 'movie' : 'tv';
+    setHint(kind, q.tmdbId, q);
+  }
+  next();
+});
+
+// ---- Eşleştirme ----
+// Sitelerin arama sonuçlarında ilk kaydı körü körüne almak yanlış diziyi oynatır. Önce TMDB id'si,
+// sonra başlık (ve yıl) uyumu aranır; güvenilir eşleşme yoksa null döner.
+const norm = s => String(s || '').toLowerCase().replace(/ı/g, 'i').normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, ' ').trim();
+function titlesOf(item) {
+  return [item.name, item.title, item.original_name, item.original_title, item.title_english, item.name_english, item.name_romanji, item.english, item.romaji, item.title_romaji, item.slug && String(item.slug).replace(/-/g, ' ')].filter(Boolean).map(norm).filter(Boolean);
+}
+function yearOf(item) {
+  const v = item.year || item.release_date || item.first_air_date || item.start_date || item.release_year || '';
+  const m = String(v).match(/\d{4}/);
+  return m ? Number(m[0]) : null;
+}
+function pickMatch(list, tmdbId, names, year) {
+  const items = (Array.isArray(list) ? list : []).filter(x => x && typeof x === 'object');
+  if (!items.length) return null;
+  const byId = items.find(t => [t.tmdb_id, t.tmdbId, t.tmdb].some(v => v && String(v) === String(tmdbId)));
+  if (byId) return byId;
+  const want = names.map(norm).filter(Boolean);
+  // Sonuçlarda hiç başlık alanı yoksa doğrulayamayız; eski davranışı (ilk kayıt) koru.
+  if (!items.some(i => titlesOf(i).length)) return items[0];
+  let best = null, bestScore = 0;
+  for (const it of items) {
+    const have = titlesOf(it);
+    let score = 0;
+    for (const w of want) for (const h of have) {
+      if (h === w) score = Math.max(score, 3);
+      else if (w.length >= 4 && h.length >= 4 && (h.includes(w) || w.includes(h))) score = Math.max(score, 2);
+    }
+    // Ortak anlamlı kelime (en az 3 harf) varsa zayıf eşleşme say
+    if (!score) {
+      const wt = new Set(want.flatMap(w => w.split(' ')).filter(t => t.length >= 3));
+      if (have.some(h => h.split(' ').some(t => wt.has(t)))) score = 1;
+    }
+    const y = yearOf(it);
+    if (score && year && y && Math.abs(y - year) > 1) score = 0;
+    it.__score = score;
+    if (score > bestScore) { best = it; bestScore = score; }
+  }
+  // Güçlü eşleşme varsa onu, yoksa sitenin ilk sonucunu (yalnızca zayıf da olsa uyumluysa) kullan.
+  if (bestScore >= 2) return best;
+  return items[0].__score >= 1 ? items[0] : null;
+}
+const yearNum = tmdb => Number(String(tmdb?.first_air_date || tmdb?.release_date || '').slice(0, 4)) || null;
+const nameList = tmdb => [tmdb?.name, tmdb?.original_name, tmdb?.title, tmdb?.original_title];
+
+// Doğrudan MP4 bağlantılarının çalışıp çalışmadığını 1 baytlık aralık isteğiyle sınar;
+// ölü olanları (ör. silinmiş 480p dosyası) listeden çıkarır, kalanları yüksek kaliteden sıralar.
+const qualityNum = q => Number(String(q || '').match(/\d{3,4}/)?.[0]) || 0;
+async function liveOnly(list) {
+  const ok = await Promise.all(list.map(async s => {
+    if (s.type === 'hls') return true;
+    try {
+      const r = await fetch(s.url, { headers: { Range: 'bytes=0-0', 'User-Agent': UA_DESKTOP }, signal: AbortSignal.timeout(5000) });
+      const good = (r.status === 200 || r.status === 206) && !/json|html/i.test(r.headers.get('content-type') || '');
+      try { r.body?.destroy?.(); } catch {}
+      return good;
+    } catch { return false; }
+  }));
+  return list.filter((_, i) => ok[i]).sort((a, b) => qualityNum(b.quality) - qualityNum(a.quality));
 }
 
-async function tmdbMovie(tmdbId) {
-  const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
-  return res.json();
+// ---- Referer gerektiren akışlar için güvenli geçit ----
+// Bazı akışlar (ör. VidMoly) yalnızca belirli bir Referer ile açılır; tarayıcı bu başlığı gönderemez.
+// Bu yüzden yalnızca BU SERVİSİN kendi verdiği adresler (kısa ömürlü jeton) sunucu üzerinden aktarılır;
+// herhangi bir adresi açan bir vekil değildir.
+const PROXY = new LRUCache(6000, 4 * 3600 * 1000);
+const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+function proxyToken(url, referer) {
+  const token = crypto.randomBytes(12).toString('base64url');
+  PROXY.set(token, { url, referer });
+  return token;
 }
-
-async function tmdbTvWithExternal(tmdbId) {
-  const url = `https://api.themoviedb.org/3/tv/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR&append_to_response=external_ids`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
-  return res.json();
+const publicBase = req => `${req.headers['x-forwarded-proto'] || req.protocol}://${req.headers['x-forwarded-host'] || req.get('host')}`;
+function rewritePlaylist(text, baseUrl, referer, base) {
+  const wrap = ref => { try { const abs = new URL(ref, baseUrl).href; return /^https:/.test(abs) ? `${base}/proxy/${proxyToken(abs, referer)}` : ref; } catch { return ref; } };
+  return text.split(/\r?\n/).map(line => {
+    if (!line) return line;
+    if (line.startsWith('#')) return line.replace(/URI="([^"]+)"/g, (_m, u) => `URI="${wrap(u)}"`);
+    return wrap(line.trim());
+  }).join('\n');
 }
-
-async function tmdbMovieWithExternal(tmdbId) {
-  const url = `https://api.themoviedb.org/3/movie/${tmdbId}?api_key=${TMDB_KEY}&language=tr-TR&append_to_response=external_ids`;
-  const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-  if (!res.ok) throw new Error(`TMDB HTTP ${res.status}`);
-  return res.json();
-}
+app.get('/proxy/:token', async (req, res) => {
+  const entry = PROXY.get(req.params.token);
+  if (!entry) return res.status(404).json({ error: 'Bağlantının süresi dolmuş' });
+  try {
+    const headers = { 'User-Agent': UA_DESKTOP, Referer: entry.referer, Accept: '*/*' };
+    if (req.headers.range) headers.Range = req.headers.range;
+    const up = await fetch(entry.url, { headers, signal: AbortSignal.timeout(30000) });
+    const type = up.headers.get('content-type') || '';
+    if (/mpegurl/i.test(type) || /\.m3u8(\?|$)/i.test(entry.url)) {
+      const body = rewritePlaylist(await up.text(), up.url || entry.url, entry.referer, publicBase(req));
+      res.status(up.status).set('Content-Type', 'application/vnd.apple.mpegurl').set('Cache-Control', 'no-store').send(body);
+      return;
+    }
+    res.status(up.status);
+    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) { const v = up.headers.get(h); if (v) res.setHeader(h, v); }
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    if (!up.body) return res.end();
+    up.body.on('error', () => res.destroy()).pipe(res);
+  } catch (e) {
+    res.status(502).json({ error: 'Kaynağa ulaşılamadı' });
+  }
+});
 
 // ---- VidMoly extractor ----
 async function extractVidMoly(embedUrl, referer) {
@@ -150,10 +293,7 @@ app.get('/api/animecix', async (req, res) => {
     const titles = searchData.results || searchData.titles || searchData || [];
 
     // 3. TMDB ID eşleşmesi bul
-    const match = titles.find(t =>
-      (t.tmdb_id && String(t.tmdb_id) === String(tmdbId)) ||
-      (t.tmdbId && String(t.tmdbId) === String(tmdbId))
-    ) || titles[0];
+    const match = pickMatch(titles, tmdbId, nameList(tmdb), yearNum(tmdb));
     if (!match) throw new Error('AnimeciX eşleşme bulunamadı');
 
     const titleId = match.id || match.title_id;
@@ -197,21 +337,23 @@ app.get('/api/animecix', async (req, res) => {
     });
     if (!tauRes.ok) throw new Error(`TauVideo HTTP ${tauRes.status}`);
     const tauData = await tauRes.json();
-    const streams = tauData.sources || tauData.streams || [];
-    const sources = streams
+    // TauVideo artık {urls:[{label,url,size}]} döndürüyor (eski biçim: sources / streams).
+    const streams = tauData.urls || tauData.sources || tauData.streams || [];
+    const sources = await liveOnly(streams
       .filter(s => s?.url && s.url.startsWith('http'))
       .map(s => ({
         url: s.url,
         quality: s.label || s.quality || 'HD',
         name: 'AnimeciX',
+        lang: 'tr',
         type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
-      }));
+      })));
 
     const result = { sources };
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -238,10 +380,7 @@ app.get('/api/anizium', async (req, res) => {
     const animes = searchData.data || searchData.results || searchData;
 
     // 3. TMDB ID eşleştir
-    const match = (Array.isArray(animes) ? animes : []).find(a =>
-      (a.tmdb_id && String(a.tmdb_id) === String(tmdbId)) ||
-      (a.tmdbId && String(a.tmdbId) === String(tmdbId))
-    ) || (Array.isArray(animes) ? animes[0] : null);
+    const match = pickMatch(animes, tmdbId, nameList(tmdb), yearNum(tmdb));
     if (!match) throw new Error('Anizium eşleşme bulunamadı');
 
     const aniziumId = match.id || match.anime_id;
@@ -272,73 +411,53 @@ app.get('/api/anizium', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
 // ---- SonAnime ----
+// Herkese açık API: arama sonuçları TMDB ve MAL id'si taşır, bölümler doğrudan MP4 (CORS açık, Referer gerekmez).
+const SONANIME_API = 'https://api.sonanime.com/api';
+const SONANIME_HEADERS = { Referer: 'https://sonanime.com/', Origin: 'https://sonanime.com', Accept: 'application/json', 'User-Agent': UA_DESKTOP };
 app.get('/api/sonanime', async (req, res) => {
-  const { tmdbId, season = '1', episode = '1' } = req.query;
+  const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
   if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
-  const cacheKey = `sonanime:${tmdbId}:${season}:${episode}`;
+  const cacheKey = `sonanime:${type}:${tmdbId}:${season}:${episode}`;
   const hit = cache.get(cacheKey);
   if (hit) return res.json(hit);
-
   try {
-    // 1. TMDB'den ad al
-    const tmdb = await tmdbTv(tmdbId);
-    const name = tmdb.name || tmdb.original_name;
-
-    // 2. SonAnime arama
-    const searchRes = await fetch(`https://api.sonanime.com/api/animes?q=${encodeURIComponent(name)}`, {
-      signal: AbortSignal.timeout(10000),
-      headers: { 'Referer': 'https://sonanime.com/', 'User-Agent': 'Mozilla/5.0' },
-    });
-    if (!searchRes.ok) throw new Error(`SonAnime arama HTTP ${searchRes.status}`);
-    const searchData = await searchRes.json();
-    const animes = searchData.data || searchData.results || searchData;
-
-    const match = (Array.isArray(animes) ? animes : []).find(a =>
-      (a.tmdb_id && String(a.tmdb_id) === String(tmdbId)) ||
-      (a.tmdbId && String(a.tmdbId) === String(tmdbId))
-    ) || (Array.isArray(animes) ? animes[0] : null);
+    const tmdb = type === 'movie' ? await tmdbMovie(tmdbId) : await tmdbTv(tmdbId);
+    const names = [...new Set(nameList(tmdb).filter(Boolean))];
+    let found = [];
+    for (const n of names.slice(0, 3)) {
+      const r = await fetch(`${SONANIME_API}/anime/search?q=${encodeURIComponent(n)}`, { headers: SONANIME_HEADERS, signal: AbortSignal.timeout(8000) });
+      if (!r.ok) throw new Error(`SonAnime arama HTTP ${r.status}`);
+      const list = await r.json();
+      found = Array.isArray(list) ? list : (list.data || []);
+      if (found.some(a => String(a.tmdb_id) === String(tmdbId))) break;
+    }
+    const match = found.find(a => String(a.tmdb_id) === String(tmdbId))
+      || pickMatch(found.map(a => ({ ...a, name: a.anime_name, title: a.anime_name_en, year: a.anime_year })), tmdbId, names, yearNum(tmdb));
     if (!match) throw new Error('SonAnime eşleşme bulunamadı');
-
-    const animeId = match.id || match.anime_id;
-
-    // 3. Episodes
-    const epListRes = await fetch(
-      `https://api.sonanime.com/api/animes/${animeId}/episodes?season=${season}`,
-      {
-        signal: AbortSignal.timeout(10000),
-        headers: { 'Referer': 'https://sonanime.com/', 'User-Agent': 'Mozilla/5.0' },
-      }
-    );
-    if (!epListRes.ok) throw new Error(`SonAnime episodes HTTP ${epListRes.status}`);
-    const epListData = await epListRes.json();
-    const episodes = epListData.data || epListData.episodes || epListData;
-
-    // 4. Episode bul
-    const ep = (Array.isArray(episodes) ? episodes : []).find(
-      e => String(e.number || e.episode_number || e.n) === String(episode)
-    );
+    const r = await fetch(`${SONANIME_API}/anime/link/${encodeURIComponent(match.anime_link)}`, { headers: SONANIME_HEADERS, signal: AbortSignal.timeout(8000) });
+    if (!r.ok) throw new Error(`SonAnime bölüm HTTP ${r.status}`);
+    const d = await r.json();
+    const eps = Array.isArray(d.episodes) ? d.episodes : [];
+    const ep = type === 'movie'
+      ? eps[0]
+      : eps.find(e => Number(e.anime_season) === Number(season) && Number(e.episode_number) === Number(episode))
+        // TMDB tek sezon, site ayrı sezonlar tutuyorsa mutlak bölüm numarasıyla dene
+        || (Number(season) === 1 ? eps.filter(e => e.episode_number != null).sort((a, b) => a.anime_season - b.anime_season || a.episode_number - b.episode_number)[Number(episode) - 1] : null);
     if (!ep) throw new Error('SonAnime bölüm bulunamadı');
-
-    const rawVideos = ep.videos || ep.sources || [];
-    const sources = (Array.isArray(rawVideos) ? rawVideos : [])
-      .filter(v => v?.url && v.url.startsWith('http'))
-      .map(v => ({
-        url: v.url,
-        quality: v.quality || v.label || 'HD',
-        name: 'SonAnime',
-        type: /\.m3u8/i.test(v.url) ? 'hls' : 'mp4',
-      }));
-
+    const sources = await liveOnly(['1080', '720', '480', '360']
+      .map(q => ep[`episode_link_${q}`] ? { url: ep[`episode_link_${q}`], quality: `${q}p`, name: 'SonAnime', lang: 'tr', type: 'mp4' } : null)
+      .filter(Boolean)
+      .slice(0, 3));
     const result = { sources };
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -409,7 +528,7 @@ app.get('/api/hdfilmcehennemi', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -468,7 +587,8 @@ app.get('/api/sinewix', async (req, res) => {
     if (results.length === 0) throw new Error('SineWix sonuç bulunamadı');
 
     // 3. TMDB ID eşleşmesi
-    const match = results.find(item => String(item.tmdb_id) === String(tmdbId)) || results[0];
+    const match = pickMatch(results, tmdbId, nameList(tmdb), yearNum(tmdb));
+    if (!match) throw new Error('SineWix eşleşme bulunamadı');
     const id = match.id || match.movie_id || match.series_id;
     if (!id) throw new Error('SineWix ID bulunamadı');
 
@@ -545,7 +665,7 @@ app.get('/api/sinewix', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -669,7 +789,7 @@ app.get('/api/dizimom', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -678,9 +798,94 @@ const DIZIYOU_BASE = 'https://www.diziyou.one';
 const DIZIYOU_STORAGE = 'https://storage.diziyou.one';
 const DIZIYOU_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36';
 
+// DiziYou: arama → bölüm sayfası → oynatıcı numarası. Akışlar storage alt alanındadır; Türkçe altyazılı
+// ({id}/play.m3u8) ve Türkçe dublaj ({id}_tr/play.m3u8) ayrı listelenir, VTT altyazı eklenir. CORS açık.
 app.get('/api/diziyou', async (req, res) => {
-  res.json({ sources: [], error: 'DiziYou: site JS render gerektiriyor ve storage API\'si kapalı — bu kaynak devre dışı' });
+  const { tmdbId, season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `diziyou:${tmdbId}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+  const get = url => fetch(url, { headers: { 'User-Agent': DIZIYOU_UA, Referer: `${DIZIYOU_BASE}/`, 'Accept-Language': 'tr-TR,tr;q=0.9' }, signal: AbortSignal.timeout(9000) });
+  try {
+    const tmdb = await tmdbTv(tmdbId);
+    const names = [...new Set(nameList(tmdb).filter(Boolean))];
+    // Bölüm adresleri "{slug}-{sezon}-sezon-{bölüm}-bolum/" biçiminde; aramadan slug'ı bul.
+    let slug = null;
+    for (const n of names.slice(0, 2)) {
+      const r = await get(`${DIZIYOU_BASE}/?s=${encodeURIComponent(n)}`);
+      if (!r.ok) continue;
+      const html = await r.text();
+      const slugs = [...new Set([...html.matchAll(/href="https:\/\/www\.diziyou\.[a-z]+\/([a-z0-9-]+?)(?:-\d+-sezon-\d+-bolum)?\/"/g)].map(m => m[1]))]
+        .filter(s => !/^(page|kategori|tag|author|wp-|diziler|filmler|iletisim)/.test(s));
+      const want = names.map(norm).filter(Boolean);
+      slug = slugs.find(s => want.includes(norm(s.replace(/-/g, ' ')))) || slugs.find(s => want.some(w => w.length >= 4 && norm(s.replace(/-/g, ' ')).startsWith(w)));
+      if (slug) break;
+    }
+    if (!slug) throw new Error('DiziYou eşleşme bulunamadı');
+    const pr = await get(`${DIZIYOU_BASE}/${slug}-${Number(season)}-sezon-${Number(episode)}-bolum/`);
+    if (!pr.ok) throw new Error(`DiziYou bölüm HTTP ${pr.status}`);
+    const page = await pr.text();
+    const id = page.match(/id="diziyouPlayer"[^>]*src="[^"]*\/player\/(\d+)\.html/)?.[1];
+    if (!id) throw new Error('DiziYou oynatıcı bulunamadı');
+    const sub = { label: 'Türkçe', lang: 'tr', url: `${DIZIYOU_STORAGE}/subtitles/${id}/tr.vtt` };
+    const sources = [];
+    if (/turkceAltyazili/.test(page) || !/turkceDublaj/.test(page)) sources.push({ url: `${DIZIYOU_STORAGE}/episodes/${id}/play.m3u8`, name: 'DiziYou · Altyazılı', quality: 'HD', lang: 'tr', type: 'hls', subtitles: [sub] });
+    if (/turkceDublaj/.test(page)) sources.push({ url: `${DIZIYOU_STORAGE}/episodes/${id}_tr/play.m3u8`, name: 'DiziYou · Türkçe Dublaj', quality: 'HD', lang: 'tr', type: 'hls' });
+    // Listelerin gerçekten var olduğunu doğrula
+    const ok = await Promise.all(sources.map(async s => { try { const r = await fetch(s.url, { headers: { 'User-Agent': DIZIYOU_UA }, signal: AbortSignal.timeout(6000) }); return r.ok && /EXTM3U/.test(await r.text()); } catch { return false; } }));
+    const result = { sources: sources.filter((_, i) => ok[i]) };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    fail(res, cacheKey, e);
+  }
 });
+
+// ---- Stremio eklentileri (varsayılan: CNCVerse Bridge) ----
+// Stremio protokolü: GET {addon}/stream/{movie|series}/{imdb}[:S:E].json. Torrent ve harici bağlantılar alınmaz;
+// tarayıcının oynatamayacağı biçimler (MKV, HEVC/x265, DTS/TrueHD, REMUX, dev dosyalar) elenir.
+// Referer isteyen akışlar /api/all içinde güvenli geçide yönlendirilir.
+const STREMIO_ADDONS = (process.env.STREMIO_ADDONS || 'https://cncverse.dpdns.org').split(',').map(s => s.trim().replace(/\/manifest\.json$/, '').replace(/\/+$/, '')).filter(s => /^https:\/\//.test(s));
+const BAD_FORMAT = /\b(mkv|hevc|x265|h\.?265|10.?bit|dts|truehd|atmos|remux|av1|dolby ?vision|\bdv\b)\b/i;
+const sizeGb = t => { const m = String(t).match(/(\d+(?:\.\d+)?)\s*(GB|MB)/i); return m ? Number(m[1]) / (m[2].toUpperCase() === 'MB' ? 1024 : 1) : 0; };
+app.get('/api/stremio', async (req, res) => {
+  const { type = 'tv', season = '1', episode = '1' } = req.query;
+  const imdb = /^tt\d{5,10}$/.test(req.query.imdb || '') ? req.query.imdb : null;
+  if (!imdb || !STREMIO_ADDONS.length) return res.json({ sources: [], error: imdb ? 'eklenti yok' : 'imdb gerekli' });
+  const cacheKey = `stremio:${type}:${imdb}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+  const path = type === 'movie' ? `movie/${imdb}` : `series/${imdb}:${Number(season)}:${Number(episode)}`;
+  try {
+    const lists = await Promise.all(STREMIO_ADDONS.map(async base => {
+      const r = await fetch(`${base}/stream/${path}.json`, { headers: { Accept: 'application/json', 'User-Agent': UA_DESKTOP }, signal: AbortSignal.timeout(14000) });
+      if (!r.ok) return [];
+      const d = await r.json().catch(() => ({}));
+      return Array.isArray(d.streams) ? d.streams : [];
+    }));
+    const sources = [];
+    for (const s of lists.flat()) {
+      if (!s?.url || !/^https:\/\//.test(s.url) || s.infoHash || s.externalUrl) continue;
+      const text = `${s.name || ''} ${s.title || s.description || ''}`;
+      if (BAD_FORMAT.test(text) || /use vlc|external player/i.test(text) || sizeGb(text) > 6 || /\.mkv(\?|$)/i.test(s.url)) continue;
+      const hls = /\bHLS\b|m3u8/i.test(text) || /\.m3u8(\?|$)/i.test(s.url);
+      const mp4 = /\.mp4(\?|$)/i.test(s.url) || /\bmp4\b/i.test(text);
+      if (!hls && !mp4) continue;   // biçimi belirsiz (çoğunlukla MKV indirme bağlantıları)
+      const origin = (text.match(/Source:\s*([^\n•]+?)\s*•\s*([^\n]+)/) || [])[2] || (text.match(/Source:\s*([^\n•]+)/) || [])[1] || 'Stremio';
+      const quality = (text.match(/\b(2160p|4K|1080p|720p|480p|Auto)\b/i) || [])[1] || 'Auto';
+      const headers = s.behaviorHints?.proxyHeaders?.request || {};
+      sources.push({ url: s.url, name: `${origin.trim().slice(0, 30)} (CNC)`, quality, type: hls ? 'hls' : 'mp4', lang: /türk|turk|\btr\b/i.test(text) ? 'tr' : undefined, ...(headers.Referer ? { referer: headers.Referer } : {}) });
+      if (sources.length >= 6) break;
+    }
+    const result = { sources };
+    cache.set(cacheKey, result, 20 * MIN);
+    res.json(result);
+  } catch (e) {
+    fail(res, cacheKey, e);
+  }
+});
+
 // ---- DDizi (Python filmmakinesi-scraper proxy) ----
 app.get('/api/ddizi', async (req, res) => {
   const url = process.env.FILMMAKINESI_SCRAPER_URL;
@@ -881,7 +1086,7 @@ app.get('/api/closeload', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -1044,7 +1249,7 @@ app.get('/api/webteizle', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -1137,7 +1342,7 @@ app.get('/api/lovefilmizle', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
 
@@ -1319,62 +1524,99 @@ app.get('/api/filmizlebabam', async (req, res) => {
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
-    res.json({ sources: [], error: e.message });
+    fail(res, cacheKey, e);
   }
 });
+
+// Anizium API'si koruma belirteci istiyor (taklit edilmez), SineWix API'si 401 dönüyor.
+const LEGACY = new Set(['anizium', 'sinewix']);
+
+const INFLIGHT = new Map();
 
 // ---- All (parallel) ----
+// Tüm kaynakları aynı anda sorar. ?budget=ms süresi dolunca, o ana kadar bulunanları döndürür;
+// yavaş bir site yüzünden hiçbir şey dönmeme durumu yoktur. Yanıtta her kaynağın durumu da bulunur.
 app.get('/api/all', async (req, res) => {
   const { tmdbId, type = 'tv', season = '1', episode = '1' } = req.query;
-  if (!tmdbId) return res.json({ sources: [], count: 0, error: 'tmdbId gerekli' });
-
-  const base = `http://localhost:${PORT}`;
-  const fetchSource = async (url) => {
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!r.ok) return [];
-      const d = await r.json().catch(() => ({}));
-      return d.sources || [];
-    } catch {
-      return [];
-    }
+  if (!tmdbId || !/^\d{1,9}$/.test(String(tmdbId))) return res.json({ sources: [], count: 0, error: 'tmdbId gerekli' });
+  const isMovie = type === 'movie';
+  const budget = Math.min(25000, Math.max(3000, Number(req.query.budget) || 12000));
+  const cacheKey = `all:${type}:${tmdbId}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  const base = publicBase(req);
+  const finish = (sources, providers) => {
+    // Referer isteyen akışları güvenli geçide yönlendir.
+    const out = sources.map(s => {
+      if (!s.referer || !/^https:/.test(s.url || '')) return s;
+      const { referer, ...rest } = s;
+      return { ...rest, url: `${base}/proxy/${proxyToken(s.url, referer)}`, name: `${s.name || 'Kaynak'}`, type: s.type || 'hls', proxied: true };
+    });
+    // Aynı adres tekrarlanmasın.
+    const seen = new Set();
+    const unique = out.filter(s => s?.url && !seen.has(s.url) && seen.add(s.url));
+    return { sources: unique, count: unique.length, providers };
   };
+  if (hit) return res.json(finish(hit.raw, hit.providers));
 
-  let allSources = [];
-  if (type === 'tv') {
-    const params = `tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`;
-    const results = await Promise.all([
-      fetchSource(`${base}/api/animecix?${params}`),
-      fetchSource(`${base}/api/anizium?${params}`),
-      fetchSource(`${base}/api/sonanime?${params}`),
-      fetchSource(`${base}/api/sinewix?${params}&type=tv`),
-      fetchSource(`${base}/api/dizimom?${params}`),
-      fetchSource(`${base}/api/webteizle?${params}&type=tv`),
-      fetchSource(`${base}/api/lovefilmizle?${params}&type=tv`),
-      fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
-      fetchSource(`${base}/api/filmizlebabam?${params}&type=tv`),
-      fetchSource(`${base}/api/ddizi?${params}`),
-      fetchSource(`${base}/api/diziwatch?${params}`),
-    ]);
-    allSources = results.flat();
-  } else {
-    // film
-    const tmdbParam = `tmdbId=${encodeURIComponent(tmdbId)}`;
-    const results = await Promise.all([
-      fetchSource(`${base}/api/hdfilmcehennemi?${tmdbParam}`),
-      fetchSource(`${base}/api/sinewix?${tmdbParam}&type=movie`),
-      fetchSource(`${base}/api/closeload?${tmdbParam}&type=movie`),
-      fetchSource(`${base}/api/webteizle?${tmdbParam}&type=movie`),
-      fetchSource(`${base}/api/lovefilmizle?${tmdbParam}&type=movie`),
-      fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=movie`),
-      fetchSource(`${base}/api/filmizlebabam?${tmdbParam}&type=movie`),
-    ]);
-    allSources = results.flat();
-  }
+  const q = k => `${k}=${encodeURIComponent(({ tmdbId, season, episode })[k])}`;
+  const params = `${q('tmdbId')}&${q('season')}&${q('episode')}`;
+  const list = isMovie
+    ? [
+        ['hdfilmcehennemi', `tmdbId=${encodeURIComponent(tmdbId)}`],
+        ['sinewix', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+        ['closeload', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+        ['webteizle', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+        ['lovefilmizle', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+        ['filmmakinesi', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+        ['filmizlebabam', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+        ['sonanime', `tmdbId=${encodeURIComponent(tmdbId)}&type=movie`],
+      ]
+    : [
+        ['animecix', params], ['anizium', params], ['sonanime', `${params}&type=tv`], ['diziyou', params],
+        ['sinewix', `${params}&type=tv`], ['dizimom', params], ['webteizle', `${params}&type=tv`],
+        ['lovefilmizle', `${params}&type=tv`], ['filmmakinesi', `${params}&type=tv`], ['filmizlebabam', `${params}&type=tv`],
+        ['ddizi', params], ['diziwatch', params],
+      ];
+  // IMDb id'si biliniyorsa Stremio eklentilerini de sor
+  if (/^tt\d{5,10}$/.test(req.query.imdb || '')) list.push(['stremio', `type=${isMovie ? 'movie' : 'tv'}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`]);
+  // Başlık ipuçlarını alt isteklere de ilet (TMDB'ye gitmeden eşleştirme yapılabilsin).
+  const hintQs = ['title', 'original', 'year', 'imdb'].filter(k => req.query[k]).map(k => `${k}=${encodeURIComponent(req.query[k])}`).join('&');
 
-  res.json({ sources: allSources, count: allSources.length });
+  // Giriş / premium gerektiren ya da kapanmış servisler varsayılan olarak taranmaz (ANTHOLOGY_LEGACY=1 ile açılır).
+  const active = process.env.ANTHOLOGY_LEGACY === '1' ? list : list.filter(([id]) => !LEGACY.has(id));
+  const providers = [];
+  const raw = [];
+  await new Promise(resolve => {
+    let left = active.length;
+    const timer = setTimeout(resolve, budget);
+    for (const [id, qs] of active) {
+      const started = Date.now();
+      (async () => {
+        // Aynı alt sorgu zaten sürüyorsa (ör. kısa + tam bütçeli iki istek) onu paylaş
+        const url = `http://127.0.0.1:${PORT}/api/${id}?${qs}${hintQs ? '&' + hintQs : ''}`;
+        if (!INFLIGHT.has(url)) {
+          const job = fetch(url, { signal: AbortSignal.timeout(25000) }).then(async r => ({ ok: r.ok, status: r.status, d: await r.json().catch(() => ({})) }));
+          INFLIGHT.set(url, job);
+          job.finally(() => INFLIGHT.delete(url)).catch(() => {});
+        }
+        const { ok, status, d } = await Promise.race([INFLIGHT.get(url), new Promise((_, rej) => setTimeout(() => rej(new Error('zaman aşımı')), budget))]);
+        if (!ok) throw new Error(`HTTP ${status}`);
+        const items = Array.isArray(d.sources) ? d.sources : [];
+        raw.push(...items.map(s => ({ ...s, provider: id })));
+        providers.push({ id, ok: !d.error || items.length > 0, ms: Date.now() - started, count: items.length, ...(d.error && !items.length ? { error: String(d.error).slice(0, 120) } : {}) });
+      })().catch(e => providers.push({ id, ok: false, ms: Date.now() - started, count: 0, error: String(e.message).slice(0, 120) }))
+        .finally(() => { if (--left === 0) { clearTimeout(timer); resolve(); } });
+    }
+  });
+  const answered = new Set(providers.map(p => p.id));
+  for (const [id] of active) if (!answered.has(id)) providers.push({ id, ok: false, ms: budget, count: 0, error: 'zaman aşımı' });
+  // Tam sonuç (zaman aşımı olmadan) 30 dk, eksik sonuç 1 dk önbelleğe alınır.
+  const complete = providers.every(p => p.error !== 'zaman aşımı');
+  if (raw.length) cache.set(cacheKey, { raw, providers }, complete ? 30 * MIN : MIN);
+  res.json(finish(raw, providers));
 });
 
-app.listen(PORT, () => {
+// HOST=127.0.0.1 verilirse yalnızca yerel arayüzü dinler (önünde Caddy gibi bir ters vekil varken).
+app.listen(PORT, process.env.HOST || "0.0.0.0", () => {
   console.log(`anthology-scraper listening on port ${PORT}`);
 });

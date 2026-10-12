@@ -842,24 +842,125 @@ function nextOf(ctx) {
   return null;
 }
 
-async function loadSources(ctx) {
-  let d;
-  const alId = ctx.a.anilistId || '';
-  $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar aranıyor…</div>`;
-  try {
-    d = await api(`/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${alId ? `&alId=${alId}` : ''}`, 65000);
-  } catch {
-    d = {sources: [], embeds: [], folder: `${ctx.a.kind}-${ctx.a.id}`};
+// Kaynaklar iki aşamada gelir: (1) yerel dosyalar + embed adresleri anında, (2) Anthology / VidRock / CinePro
+// gibi doğrudan akış (HLS/MP4) bulan servisler arka planda. Kullanıcı ikincisini beklemeden izlemeye başlar.
+// TMDB animelerinde her sezon AniList'te ayrı kayıttır; sunucunun çıkardığı sezon zincirini kullan.
+// TMDB sezonları AniList kayıtlarıyla birebir örtüşüyorsa sezon → kayıt; TMDB sezonları birleştirmişse
+// (ör. 47 bölümlük tek sezon ya da One Piece'in 23 sezonu) mutlak bölüm numarasını bölüm sayılarıyla dağıt.
+function animeIds(a, s, e) {
+  const chain = a.animeSeasons;
+  if (!Array.isArray(chain) || !chain.length) return a.anilistId ? {al: a.anilistId, mal: a.malId || null, ep: e} : null;
+  if (isMovie(a)) return {...chain[0], ep: 1};
+  const seasons = (a.seasons || []).filter(x => x.n > 0);
+  if (seasons.length > 1 && chain.length >= seasons.length) return chain[s - 1] ? {...chain[s - 1], ep: e} : null;
+  let abs = e;
+  for (const x of seasons) if (x.n < s) abs += x.count || 0;
+  for (let i = 0; i < chain.length; i++) {
+    const c = chain[i];
+    if (!c.eps || abs <= c.eps || i === chain.length - 1) return {...c, ep: abs};
+    abs -= c.eps;
   }
+  return null;
+}
+const playPath = (ctx, phase) => { const ids = animeIds(ctx.a, ctx.s, ctx.e); return `/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${ids?.al ? `&alId=${ids.al}` : ''}${ids?.mal ? `&malId=${ids.mal}` : ''}${ids?.ep && ids.ep !== ctx.e ? `&aep=${ids.ep}` : ''}&phase=${phase}`; };
+async function loadSources(ctx) {
+  $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar hazırlanıyor…</div>`;
+  let d;
+  try { d = await api(playPath(ctx, 'fast'), 20000); } catch { d = {sources: [], embeds: [], folder: `${ctx.a.kind}-${ctx.a.id}`}; }
   if (ctx.v !== routeId) return;
   // Oynatıcı yalnızca kullanıcının kendi veya yayın izni olan video adreslerini açar.
   ctx.sources = d.sources || [];
-  ctx.embeds  = d.embeds  || [];
-  ctx.folder  = d.folder;
-  ctx.vidrift  = d.vidrift || ctx.embeds.find(e => e.id === 'vidrift')?.url || null;
-  if (ctx.sources.length) mountPlayer(ctx, 0);
-  else if (ctx.embeds.length) mountEmbed(ctx, 0);
-  else emptyStage(ctx);
+  ctx.embeds = d.embeds || [];
+  ctx.folder = d.folder;
+  ctx.vidrift = d.vidrift || ctx.embeds.find(e => e.id === 'vidrift')?.url || null;
+  ctx.mode = null;
+  ctx.remote = ctx.sources.length ? 'skip' : 'loading';   // kendi dosyan varsa başka kaynak aramaya gerek yok
+  if (ctx.sources.length) return mountPlayer(ctx, 0);
+  // İki sorgu: kısa bütçeli olan hızlı kaynakları (çoğu Türkçe) 2-3 saniyede getirir, tam sorgu yavaşları bekler.
+  const quick = store.get('preferTr', true) ? fetchRemote(ctx, 3500) : Promise.resolve();
+  fetchRemote(ctx);
+  // Türkçe doğrudan kaynak kısa sürede gelirse onunla başla; gelmezse embed ile devam et (arama sürer).
+  if (store.get('preferTr', true) && ctx.embeds.length) {
+    ctx.deciding = true;
+    $('#stage .stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Türkçe kaynaklar aranıyor…</div>`;
+    await Promise.race([quick, new Promise(r => setTimeout(r, 5000))]);
+    ctx.deciding = false;
+    if (ctx.v !== routeId || ctx.mode) return;
+  }
+  const tr = store.get('preferTr', true) ? ctx.sources.findIndex(x => x.lang === 'tr') : -1;
+  if (tr >= 0) mountPlayer(ctx, tr);
+  else if (ctx.embeds.length) mountEmbed(ctx, preferredEmbed(ctx));
+  else if (ctx.sources.length) mountPlayer(ctx, 0);
+  else if (ctx.remote !== 'loading') emptyStage(ctx);
+}
+async function fetchRemote(ctx, budget = 0) {
+  let d;
+  try { d = await api(playPath(ctx, 'remote') + (budget ? `&budget=${budget}` : ''), budget ? budget + 6000 : 40000, {quiet: true}); } catch { d = {sources: []}; }
+  if (ctx.v !== routeId) return;
+  // İmzalı adresler her istekte değişebilir; aynı kaynak + ad ikinci kez eklenmez.
+  const sig = x => `${x.origin || ''}|${x.name}`;
+  const known = new Set((ctx.sources || []).flatMap(x => [x.url, sig(x)]));
+  const fresh = (d.sources || []).filter(x => !known.has(x.url) && !known.has(sig(x)) && known.add(sig(x)));
+  const firstFresh = ctx.sources.length;
+  ctx.sources = [...(ctx.sources || []), ...fresh];
+  // Kısa sorgu yalnızca eldekini ekler; arama durumunu tam sorgu kapatır.
+  if (budget) {
+    if (fresh.length && ctx.mode) refreshSrcBar(ctx);
+    if (fresh.length && ctx.mode === 'embed') toast(`${fresh.length} doğrudan kaynak bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountPlayer(ctx, firstFresh); }});
+    return;
+  }
+  ctx.remote = ctx.sources.some(x => x.origin !== 'local' && x.origin !== 'manifest') ? 'done' : 'none';
+  if (ctx.mode === 'embed') {
+    refreshSrcBar(ctx);
+    if (fresh.length) toast(`${fresh.length} doğrudan kaynak bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountPlayer(ctx, firstFresh); }});
+  } else if (!ctx.mode && !ctx.deciding) {
+    // Hiç embed yoktu: bulunanı aç, yoksa boş durumu göster
+    if (ctx.sources.length) mountPlayer(ctx, 0); else emptyStage(ctx);
+  } else if (ctx.mode === 'player') refreshSrcBar(ctx);
+}
+// Tercihleri hatırla: son seçilen embed ve (anime için) altyazılı / dublaj.
+function preferredEmbed(ctx) {
+  const pref = store.get('embedPref', null);
+  const list = ctx.embeds || [];
+  if (pref?.id) { const i = list.findIndex(e => e.id === pref.id); if (i >= 0) return i; }
+  if (pref?.lang) { const i = list.findIndex(e => e.anime && e.lang === pref.lang); if (i >= 0) return i; }
+  return 0;
+}
+const EMBED_SHOWN = 8;
+function srcBarHtml(ctx, mode, index) {
+  const direct = ctx.sources || [], embeds = ctx.embeds || [];
+  const chip = (cls, attr, text) => `<button class="source-chip ${cls}" type="button" ${attr} title="${esc(text)}">${esc(text)}</button>`;
+  const status = ctx.remote === 'loading' ? '<span class="src-status" role="status"><span class="spin"></span>Doğrudan kaynaklar aranıyor…</span>' : '';
+  const own = direct.length && direct.every(x => x.origin === 'local' || x.origin === 'manifest');
+  return `${direct.length ? `<span class="source-label">${own ? 'Dosya' : 'Doğrudan'}</span><div class="source-list">${direct.map((x, i) => chip(`${mode === 'player' && i === index ? 'on' : ''} ${x.lang === 'tr' ? 'is-tr' : ''}`, `data-source="${i}"`, x.name)).join('')}</div>` : ''}
+    ${embeds.length ? `<span class="source-label">Embed</span><div class="source-list">${embeds.map((e, i) => (i < EMBED_SHOWN || ctx.moreEmbeds || (mode === 'embed' && i === index)) ? chip(`${mode === 'embed' && i === index ? 'on' : ''} ${e.backup ? 'is-backup' : ''}`, `data-embed="${i}"`, e.name) : '').join('')}${embeds.length > EMBED_SHOWN ? `<button class="source-chip source-chip-dim" type="button" data-more-embeds>${ctx.moreEmbeds ? 'Daha az' : `Daha fazla (+${embeds.length - EMBED_SHOWN})`}</button>` : ''}${!CLOUD && mode === 'embed' ? '<button class="source-chip source-chip-dim" type="button" id="add-local-hint" title="Kendi dosyanı ekle">+ Dosyam</button>' : ''}</div>` : ''}
+    ${status}`;
+}
+function bindSrcBar(ctx) {
+  const bar = $('#src-bar');
+  if (!bar) return;
+  bar.querySelectorAll('[data-source]').forEach(b => b.onclick = () => mountPlayer(ctx, Number(b.dataset.source)));
+  $('[data-more-embeds]', bar)?.addEventListener('click', () => { ctx.moreEmbeds = !ctx.moreEmbeds; refreshSrcBar(ctx); });
+  bar.querySelectorAll('[data-embed]').forEach(b => b.onclick = () => {
+    const i = Number(b.dataset.embed), e = ctx.embeds[i];
+    if (e) store.set('embedPref', {id: e.id, lang: e.anime ? e.lang : store.get('embedPref', null)?.lang});
+    mountEmbed(ctx, i);
+  });
+}
+function refreshSrcBar(ctx) {
+  const bar = $('#src-bar');
+  if (!bar) return;
+  bar.innerHTML = srcBarHtml(ctx, ctx.mode, ctx.index);
+  bindSrcBar(ctx);
+  bindLocalHint(ctx);
+}
+// Mevcut kaynak çalışmadığında sıradakine geç (doğrudan kaynaklar, sonra embed'ler).
+function nextSource(ctx) {
+  if (ctx.mode === 'player' && ctx.sources[ctx.index + 1]) return mountPlayer(ctx, ctx.index + 1);
+  if (ctx.mode === 'player' && ctx.embeds.length) return mountEmbed(ctx, 0);
+  if (ctx.mode === 'embed' && ctx.embeds[ctx.index + 1]) return mountEmbed(ctx, ctx.index + 1);
+  if (ctx.mode === 'embed' && ctx.sources.length) return mountPlayer(ctx, 0);
+  toast('Başka kaynak kalmadı');
 }
 
 function emptyStage(ctx) {
@@ -891,18 +992,56 @@ function emptyStage(ctx) {
 }
 
 // ---------------- Embed iframe oynatıcı (VidRift, VidPlus, Vidy, VidSrc, VidRock, MegaPlay) ----------------
+// Oynatıcıların gönderdiği olayları tek biçime çevirir: {time, duration, ended, failed, episode, exit}
+// Desteklenenler: VidRift, Vidy, PLAYER_EVENT ailesi (VidFast, VixSrc, VidUP, VidZee, Vidrock, TryEmbed, AniFlow),
+// VidSrc.sh (player_status), MoviesAPI, Zokoanime, watching-log (AniFlow, MegaPlay), Viduki, VidCore, Videasy (çift JSON).
+function parsePlayerMessage(raw) {
+  let d = raw;
+  for (let i = 0; i < 2 && typeof d === 'string'; i++) { try { d = JSON.parse(d); } catch { return /^(ended|complete)$/i.test(d) ? {ended: true} : null; } }
+  if (!d || typeof d !== 'object') return null;
+  const num = v => (typeof v === 'number' && isFinite(v) ? v : Number.isFinite(Number(v)) && v !== '' && v != null ? Number(v) : undefined);
+  if (typeof d.type === 'string' && d.type.startsWith('vidrift:')) {
+    if (d.type === 'vidrift:progress') return {time: num(d.currentTime), duration: num(d.duration)};
+    if (d.type === 'vidrift:ended') return {ended: true};
+    if (d.type === 'vidrift:episode') return {episode: {s: num(d.season), e: num(d.episode)}};
+    if (d.type === 'vidrift:exit') return {exit: true};
+    return null;
+  }
+  if (d.type === 'PLAYER_EVENT' && d.data && typeof d.data === 'object') {
+    const x = d.data;
+    if (x.player_status) return {time: num(x.player_progress), duration: num(x.player_duration), ended: x.player_status === 'completed'};
+    const ev = x.event || x.type;
+    return {time: num(x.currentTime), duration: num(x.duration), ended: ev === 'ended' || ev === 'complete', failed: ev === 'error'};
+  }
+  if (d.source === 'moviesapi-player') { const x = d.data || d; const ev = d.event || d.type; return {time: num(x.currentTime), duration: num(x.duration), ended: ev === 'ended'}; }
+  if (d.channel === 'zokoanime') { const x = d.data || d; return {time: num(x.position ?? x.currentTime), duration: num(x.duration), ended: d.type === 'ended' || d.type === 'complete', failed: d.type === 'error'}; }
+  if (d.type === 'watching-log') return {time: num(d.currentTime), duration: num(d.duration)};
+  if (d.type === 'viduki:all-servers-failed') return {failed: true};
+  if (d.type === 'vidcore:ended') return {ended: true};
+  if (d.event === 'timeupdate' && 'currentTime' in d) return {time: num(d.currentTime), duration: num(d.duration)};
+  if (d.event === 'ended') return {ended: true};
+  return null;
+}
+// Kaldığı yerden başlat: oynatıcı destekliyorsa kayıtlı saniyeyi adrese ekler.
+function embedUrlFor(ctx, embed) {
+  const saved = progress[`${keyOf(ctx.a)}:${ctx.s}:${ctx.e}`];
+  if (!embed.resume || !store.get('resume', true) || !saved || saved.t < 10 || saved.t > saved.d - 30) return embed.url;
+  try { const u = new URL(embed.url); u.searchParams.set(embed.resume, String(Math.floor(saved.t))); return u.href; } catch { return embed.url; }
+}
+
 function mountEmbed(ctx, index) {
   const embeds = ctx.embeds || [];
   const embed = embeds[index];
   if (!embed) { emptyStage(ctx); return; }
   destroyPlayer();
   const stage = $('#stage');
-  const hasLocal = !CLOUD;
+  ctx.mode = 'embed'; ctx.index = index;
+  const src = embedUrlFor(ctx, embed);
 
   stage.innerHTML = `<div class="stage-inner vidrift-wrap">
     <iframe
       class="vidrift-frame"
-      src="${esc(embed.url)}"
+      src="${esc(src)}"
       allowfullscreen
       allow="autoplay; fullscreen; encrypted-media *; autoplay *; fullscreen *; picture-in-picture *"
       title="${esc(ctx.a.title)}"
@@ -910,78 +1049,74 @@ function mountEmbed(ctx, index) {
     ></iframe>
     <div class="next-up" id="next-up" hidden></div>
   </div>
-  <div class="src-bar">
-    <span class="source-label">Embed</span>
-    <div class="source-list">
-      ${embeds.map((e, i) => `<button class="source-chip ${i === index ? 'on' : ''}" type="button" data-embed="${i}" title="${esc(e.name)}">${esc(e.name)}</button>`).join('')}
-      ${hasLocal ? `<button class="source-chip source-chip-dim" type="button" id="add-local-hint" title="Kendi dosyanı ekle">+ Dosyam</button>` : ''}
-    </div>
-  </div>`;
+  <div class="src-bar" id="src-bar">${srcBarHtml(ctx, 'embed', index)}</div>`;
 
-  stage.querySelectorAll('[data-embed]').forEach(btn => btn.onclick = () => mountEmbed(ctx, Number(btn.dataset.embed)));
+  bindSrcBar(ctx);
 
-  // Embed iframe hata tespiti: X-Frame-Options vb. engelinde kullanıcıya uyarı göster.
-  // İframe load olayını 15 saniye dinle; tetiklenmezse uyarı ekle.
+  // Iframe 15 saniyede açılmazsa sıradaki kaynağı öner.
   const iframeEl = stage.querySelector('.vidrift-frame');
   let embedLoaded = false;
-  if (iframeEl) {
-    iframeEl.addEventListener('load', () => { embedLoaded = true; }, {once: true});
-  }
+  iframeEl?.addEventListener('load', () => { embedLoaded = true; }, {once: true});
   const embedErrorTimer = setTimeout(() => {
-    if (!document.contains(stage)) return;
-    if (embedLoaded) return;
+    if (!document.contains(stage) || embedLoaded) return;
     const warn = document.createElement('div');
     warn.className = 'stage-error';
     warn.setAttribute('role', 'alert');
-    warn.innerHTML = '<p>Bu kaynak yüklenemedi. Farklı bir kaynak deneyin.</p>';
+    warn.innerHTML = '<p>Bu kaynak yüklenemedi.</p><button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>';
     stage.querySelector('.stage-inner')?.prepend(warn);
+    $('[data-next-src]', warn).onclick = () => nextSource(ctx);
   }, 15000);
 
-  // VidRift postMessage
-  const vidriftOrigin = 'https://embed.vidrift.net';
-  const onVidrift = e => {
-    if (e.origin !== vidriftOrigin) return;
-    const d = e.data;
-    if (d.type === 'vidrift:progress') saveProgress(ctx.a, ctx.s, ctx.e, d.currentTime, d.duration);
-    if (d.type === 'vidrift:episode') { history.replaceState(null, '', watchHref(ctx.a, d.season, d.episode)); ctx.s = d.season; ctx.e = d.episode; updateNow(ctx); }
-    if (d.type === 'vidrift:ended') { const n = nextOf(ctx); if (n) nextUp(ctx, n); }
-    if (d.type === 'vidrift:exit') history.back();
+  // Oynatıcı olayları: ilerlemeyi kaydet, bitince sonraki bölüm, "tüm sunucular başarısız" olunca sıradaki kaynak.
+  const embedOrigin = (() => { try { return new URL(embed.url).origin; } catch { return ''; } })();
+  let lastSave = 0, endedOnce = false, failedOnce = false;
+  const onMessage = e => {
+    // Yalnızca bu iframe'den (ya da aynı sağlayıcının iç çerçevesinden) gelen mesajlar
+    if (!iframeEl || (e.source !== iframeEl.contentWindow && e.origin !== embedOrigin)) return;
+    const ev = parsePlayerMessage(e.data);
+    if (!ev) return;
+    if (ev.time > 0 && ev.duration > 0 && Date.now() - lastSave > 4000) { lastSave = Date.now(); saveProgress(ctx.a, ctx.s, ctx.e, ev.time, ev.duration); }
+    if (ev.episode?.s && ev.episode?.e) { history.replaceState(null, '', watchHref(ctx.a, ev.episode.s, ev.episode.e)); ctx.s = ev.episode.s; ctx.e = ev.episode.e; updateNow(ctx); }
+    if (ev.exit) history.back();
+    if (ev.ended && !endedOnce && !(ev.duration > 0 && ev.time > 0 && ev.duration - ev.time > 90)) {
+      endedOnce = true;
+      if (ev.duration > 0) saveProgress(ctx.a, ctx.s, ctx.e, ev.duration, ev.duration);
+      const n = nextOf(ctx);
+      if (n) nextUp(ctx, n);
+    }
+    if (ev.failed && !failedOnce && ctx.mode === 'embed' && ctx.index === index) {
+      failedOnce = true;
+      toast(`${embed.name} oynatamadı, sıradaki kaynağa geçiliyor`, 'info');
+      setTimeout(() => { if (ctx.mode === 'embed' && ctx.index === index && ctx.v === routeId) nextSource(ctx); }, 1500);
+    }
   };
-  // Vidy.st postMessage
-  const vidyOrigin = 'https://vidy.st';
-  const onVidy = e => {
-    if (e.origin !== vidyOrigin) return;
-    try {
-      const p = typeof e.data === 'string' ? JSON.parse(e.data) : e.data;
-      if (p?.event === 'timeupdate') saveProgress(ctx.a, ctx.s, ctx.e, p.currentTime, p.duration);
-      if (p?.event === 'ended') { const n = nextOf(ctx); if (n) nextUp(ctx, n); }
-    } catch {}
-  };
-  window.addEventListener('message', onVidrift);
-  window.addEventListener('message', onVidy);
+  window.addEventListener('message', onMessage);
   player = {
     video: null, hls: null, art: null, dash: null,
     cleanup: [
-      () => window.removeEventListener('message', onVidrift),
-      () => window.removeEventListener('message', onVidy),
+      () => window.removeEventListener('message', onMessage),
       () => clearTimeout(embedErrorTimer),
     ]
   };
 
-  if ($('#add-local-hint')) {
-    $('#add-local-hint').onclick = () => {
-      const details = document.createElement('details');
-      details.className = 'addfile';
-      details.innerHTML = `<summary>Kendi dosyamı nasıl eklerim?</summary>
-        <p>Videoyu proje içindeki <code>media/${esc(ctx.folder)}/</code> klasörüne ${isMovie(ctx.a) ? 'koy' : `<code>S${String(ctx.s).padStart(2, '0')}E${String(ctx.e).padStart(2, '0')}.mp4</code> adıyla koy`}.</p>
-        <div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(ctx.folder)}">Klasör adını kopyala</button><button class="btn btn-ghost btn-sm" data-rescan>Yeniden tara</button></div>`;
-      stage.querySelector('.src-bar')?.after(details);
-      $('[data-copy]', details)?.addEventListener('click', ev => navigator.clipboard?.writeText(ev.target.dataset.copy).then(() => toast('Kopyalandı'), () => toast(ev.target.dataset.copy)));
-      $('[data-rescan]', details)?.addEventListener('click', async () => { await refreshLibrary(true); loadSources(ctx); toast(library.has(keyOf(ctx.a)) ? 'Klasör tarandı' : 'Bu anime için dosya bulunamadı'); });
-      $('#add-local-hint').remove();
-    };
-  }
+  bindLocalHint(ctx);
   $('#now') && updateNow(ctx);
+}
+function bindLocalHint(ctx) {
+  const hint = $('#add-local-hint');
+  if (!hint) return;
+  hint.onclick = () => {
+    const stage = $('#stage');
+    const details = document.createElement('details');
+    details.className = 'addfile';
+    details.innerHTML = `<summary>Kendi dosyamı nasıl eklerim?</summary>
+      <p>Videoyu proje içindeki <code>media/${esc(ctx.folder)}/</code> klasörüne ${isMovie(ctx.a) ? 'koy' : `<code>S${String(ctx.s).padStart(2, '0')}E${String(ctx.e).padStart(2, '0')}.mp4</code> adıyla koy`}.</p>
+      <div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(ctx.folder)}">Klasör adını kopyala</button><button class="btn btn-ghost btn-sm" data-rescan>Yeniden tara</button></div>`;
+    stage.querySelector('.src-bar')?.after(details);
+    $('[data-copy]', details)?.addEventListener('click', ev => navigator.clipboard?.writeText(ev.target.dataset.copy).then(() => toast('Kopyalandı'), () => toast(ev.target.dataset.copy)));
+    $('[data-rescan]', details)?.addEventListener('click', async () => { await refreshLibrary(true); loadSources(ctx); toast(library.has(keyOf(ctx.a)) ? 'Klasör tarandı' : 'Bu anime için dosya bulunamadı'); });
+    hint.remove();
+  };
 }
 
 // Geriye dönük uyumluluk
@@ -999,11 +1134,11 @@ async function mountPlayer(ctx, index) {
   destroyPlayer();
   const src = ctx.sources[index];
   const stage = $('#stage');
+  ctx.mode = 'player'; ctx.index = index;
   stage.innerHTML = `<div class="stage-inner"><div class="art" id="art">${loading('Oynatıcı hazırlanıyor')}</div>
     <div class="next-up" id="next-up" hidden></div></div>
-    <div class="src-bar"><span class="source-label">Kaynak</span><div class="source-list">${ctx.sources.map((x, i) => `<button class="source-chip ${i === index ? 'on' : ''}" type="button" data-source="${i}">${esc(x.name)}</button>`).join('')}${(ctx.embeds||[]).map((e, i) => `<button class="source-chip" type="button" data-embed="${i}" title="${esc(e.name)}">${esc(e.name)}</button>`).join('')}</div></div>`;
-  stage.querySelectorAll('[data-source]').forEach(button => button.onclick = () => mountPlayer(ctx, Number(button.dataset.source)));
-  stage.querySelectorAll('[data-embed]').forEach(btn => btn.onclick = () => mountEmbed(ctx, Number(btn.dataset.embed)));
+    <div class="src-bar" id="src-bar">${srcBarHtml(ctx, 'player', index)}</div>`;
+  bindSrcBar(ctx);
   const p = {video: null, hls: null, art: null, cleanup: []};
   player = p;
   const isHls = src.type === 'hls';
@@ -1092,7 +1227,9 @@ function nextUp(ctx, n) {
 function stageError(ctx, msg) {
   const box = document.createElement('div');
   box.className = 'stage-error';
-  box.innerHTML = `<p>${esc(msg)}</p>`;
+  const more = (ctx.mode === 'player' && (ctx.sources[ctx.index + 1] || ctx.embeds?.length)) || (ctx.mode === 'embed' && ctx.embeds?.[ctx.index + 1]);
+  box.innerHTML = `<p>${esc(msg)}</p>${more ? '<button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>' : ''}`;
+  $('[data-next-src]', box)?.addEventListener('click', () => nextSource(ctx));
   $('#stage .stage-inner')?.append(box);
 }
 function destroyPlayer() {
@@ -2040,6 +2177,7 @@ const PREFS = [
   ['heroTrailer', 'Vitrinde fragmanı otomatik oynat', 'Ana sayfadaki büyük vitrinde birkaç saniye sonra sessiz fragman başlar.'],
   ['autoNext', 'Sonraki bölüme otomatik geç', 'Bölüm bitince 8 saniyelik geri sayımla sıradakini açar.'],
   ['resume', 'Kaldığım yerden devam et', 'Bir videoyu yeniden açtığında son izlediğin saniyeden başlar.'],
+  ['preferTr', 'Türkçe kaynakları önce aç', 'Türkçe altyazılı ya da dublajlı doğrudan kaynak bulunursa oynatma onunla başlar.'],
 ];
 const THEMES = [['system', 'Sistem'], ['dark', 'Koyu'], ['light', 'Açık']];
 function openSettings() {

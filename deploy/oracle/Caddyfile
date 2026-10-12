@@ -1,0 +1,25 @@
+# setup.sh bu dosyadaki {$LOVELL_DOMAIN} yerine sunucunun adresini (ör. 129-1-2-3.sslip.io) yazıp
+# /etc/caddy/Caddyfile olarak kurar. Caddy her alt alan için otomatik HTTPS sertifikası alır.
+{
+	# Sertifika uyarıları için e-posta gerekmez; istersen buraya ekleyebilirsin:
+	# email sen@ornek.com
+}
+
+anthology.{$LOVELL_DOMAIN} {
+	# Video geçidi uzun akışlar taşır: tamponlamadan anında ilet
+	reverse_proxy 127.0.0.1:3777 {
+		flush_interval -1
+		transport http {
+			read_timeout 10m
+			write_timeout 10m
+		}
+	}
+	header -Server
+}
+
+vidrock.{$LOVELL_DOMAIN} {
+	reverse_proxy 127.0.0.1:3001
+	header -Server
+}
+
+# DDizi/DiziWatch kazıyıcısı yalnızca Anthology tarafından (127.0.0.1:10000) kullanılır; dışarı açılmaz.

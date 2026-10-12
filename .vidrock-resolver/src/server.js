@@ -101,4 +101,4 @@ app.get('/api/resolve', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => console.log(`VidRock Resolver :${PORT}`));
+app.listen(PORT, process.env.HOST || "0.0.0.0", () => console.log(`VidRock Resolver :${PORT}`));

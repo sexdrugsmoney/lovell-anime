@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {ROOT} from './lib/env.js';
 import {tmdbGet, netStatus} from './lib/net.js';
 import {browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from './lib/catalog.js';
-import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, cineproSources} from './lib/media.js';
+import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources} from './lib/media.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -147,30 +147,30 @@ export const server = http.createServer(async (req, res) => {
     if (m) {
       const kind = m[1], id = Number(m[2]);
       const season = int(q.get('s')), episode = int(q.get('e'));
-      const alId = q.get('alId') ? Number(q.get('alId')) : null;
-      const folder = `${kind}-${id}`;
-
-      // Paralel: yerel dosyalar + CinePro kaynak sorgusu
-      const [localSources, cinepro] = await Promise.all([
-        Promise.resolve(sources(kind, id, season, episode)),
-        // CinePro yalnızca tv/movie için — al kind için TMDB id yok
-        (kind !== 'al')
-          ? cineproSources(kind, id, alId, season, episode).catch(() => [])
-          : Promise.resolve([]),
-      ]);
-
-      // Embed sağlayıcıları (iframe tabanlı)
-      const embeds = embedSources(kind, id, alId, season, episode);
-
-      // VidRift hala tek embed olarak da açık kalıyor (geriye dönük uyumluluk)
-      const vidrift = embeds.find(e => e.id === 'vidrift')?.url || null;
-
-      return json(res, 200, {
-        sources: [...localSources, ...cinepro],
-        embeds,
-        vidrift,  // eskiyle uyumluluk
-        folder,
-      });
+      const alId = /^\d{1,9}$/.test(q.get('alId') || '') ? Number(q.get('alId')) : null;
+      const malId = /^\d{1,9}$/.test(q.get('malId') || '') ? Number(q.get('malId')) : null;
+      const animeEpisode = /^\d{1,5}$/.test(q.get('aep') || '') ? Number(q.get('aep')) : null;
+      // phase=fast  : yerel dosyalar + embed adresleri (ağ isteği yok, anında)
+      // phase=remote: Anthology / VidRock / CinePro gibi doğrudan akış bulan servisler (süre sınırlı)
+      // phase yok   : ikisi birden (eski istemcilerle uyumlu)
+      const phase = q.get('phase');
+      const out = {folder: `${kind}-${id}`};
+      if (phase !== 'remote') {
+        out.sources = sources(kind, id, season, episode);
+        out.embeds = embedSources(kind, id, alId, season, episode, malId, animeEpisode);
+        out.vidrift = out.embeds.find(e => e.id === 'vidrift')?.url || null;
+      }
+      if (phase !== 'fast') {
+        const info = kind === 'al' ? null : await Promise.race([detail(kind, String(id)).catch(() => null), new Promise(r => setTimeout(r, 4000))]);
+        const hint = info ? {title: info.title, original: info.original, year: info.year, imdb: info.imdb} : null;
+        // ?budget=ms: istemci önce kısa bütçeyle (hızlı Türkçe kaynaklar), sonra tam bütçeyle sorar
+        const budget = /^\d{4,5}$/.test(q.get('budget') || '') ? Math.min(20000, Math.max(2500, Number(q.get('budget')))) : 14000;
+        const remote = await remoteSources({kind, id, alId, season, episode, hint}, budget);
+        out.sources = [...(out.sources || []), ...remote.sources];
+        out.report = remote.report;
+        out.timedOut = remote.timedOut;
+      }
+      return json(res, 200, out);
     }
     if (u.pathname === '/api/library') return json(res, 200, {items: library()});    if (u.pathname === '/api/rescan') { scan(true); return json(res, 200, {items: library()}); }
     if (u.pathname === '/api/img') return imageProxy(u, res);

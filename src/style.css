@@ -1561,3 +1561,15 @@ main { overflow-x: clip; }
 :root[data-section="media"][data-theme="light"] body:not(:has(main .hero)) .top:not(.scrolled) { --text: #141414; --dim: #5f5f5f; --line: #dddddd; --bg-2: #f5f5f5; color: #141414; }
 :root[data-section="media"][data-theme="light"] body:not(:has(main .hero)) .top .nav a { color: var(--dim); }
 :root[data-section="media"][data-theme="light"] body:not(:has(main .hero)) .top .nav a[aria-current] { color: var(--text); }
+
+/* ---------- Kaynak çubuğu (doğrudan + embed) ---------- */
+.src-bar { flex-wrap: wrap; row-gap: 8px; column-gap: 12px; }
+.src-bar .source-list { flex: 0 1 auto; }
+.src-bar .source-label + .source-list { margin-right: 10px; }
+.source-chip.is-tr::after { content: "TR"; margin-left: 6px; padding: 0 4px; border-radius: 3px; background: rgba(255,255,255,.14); font-size: 9px; font-weight: 800; letter-spacing: .06em; }
+.source-chip.on.is-tr::after { background: rgba(0,0,0,.25); }
+.src-status { display: inline-flex; align-items: center; gap: 8px; color: #8d92ad; font-size: 12px; font-weight: 600; margin-left: auto; }
+.src-status .spin { width: 13px; height: 13px; border-width: 2px; }
+.stage-error { display: flex; align-items: center; gap: 14px; }
+.source-chip.is-backup { opacity: .62; border-style: dashed; }
+.source-chip.is-backup:hover, .source-chip.is-backup.on { opacity: 1; }

@@ -3,6 +3,7 @@
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
 import {configure, browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
+import {buildEmbeds, fetchRemoteSources, normalizeSources} from '../lib/providers.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
 
@@ -145,173 +146,6 @@ async function fetchCloseLoad(tmdbId, env) {
   }];
 }
 
-// ---- Embed sağlayıcıları (iframe — kurulum gerektirmez) ----
-function buildEmbeds(kind, id, alId, season, episode, opts = {}) {
-  const color = (opts.brandColor || 'e4202b').replace('#', '');
-  const brand = (opts.brand || 'LOVELL').slice(0, 28);
-  const brandLogo = opts.brandLogo || '';
-  const list = [];
-  const add = (embedId, name, url) => { if (url) list.push({id: embedId, name, url, kind: 'embed', origin: 'embed'}); };
-
-  // VidRift — TMDB (tv/movie)
-  if (kind !== 'al') {
-    const vBase = kind === 'movie'
-      ? `https://embed.vidrift.net/embed/movie/${id}`
-      : `https://embed.vidrift.net/embed/tv/${id}/${season}/${episode}`;
-    const vp = new URLSearchParams();
-    if (brand) vp.set('brand', brand);
-    vp.set('brandColor', color);
-    if (brandLogo) vp.set('brandLogo', brandLogo);
-    vp.set('exit', '1');
-    add('vidrift', 'VidRift', `${vBase}?${vp}`);
-  }
-
-  // VidPlus — TMDB (tv/movie) + AniList (anime)
-  if (kind === 'al' && alId) {
-    add('vidplus', 'VidPlus', `https://player.vidplus.to/embed/anime/${alId}/${episode}?primarycolor=${color}&autonext=true&autoplay=true`);
-  } else if (kind === 'movie') {
-    add('vidplus', 'VidPlus', `https://player.vidplus.to/embed/movie/${id}?primarycolor=${color}&autoplay=true`);
-  } else if (kind === 'tv') {
-    add('vidplus', 'VidPlus', `https://player.vidplus.to/embed/tv/${id}/${season}/${episode}?primarycolor=${color}&autonext=true&autoplay=true`);
-  }
-
-  // Vidy.st — TMDB + AniList, postMessage progress
-  if (kind === 'al' && alId) {
-    add('vidy', 'Vidy', `https://vidy.st/anime/${alId}/${episode}?color=${color}&episodeSelector=true&autoplayNextEpisode=true`);
-  } else if (kind === 'movie') {
-    add('vidy', 'Vidy', `https://vidy.st/movie/${id}?color=${color}&autoplay=true`);
-  } else if (kind === 'tv') {
-    add('vidy', 'Vidy', `https://vidy.st/tv/${id}/${season}/${episode}?color=${color}&nextEpisode=true&episodeSelector=true&autoplayNextEpisode=true`);
-  }
-
-  // VidSrc — TMDB
-  if (kind !== 'al') {
-    const vsBase = kind === 'movie'
-      ? `https://vidsrc.buzz/embed/movie/${id}`
-      : `https://vidsrc.buzz/embed/tv/${id}/${season}/${episode}`;
-    add('vidsrc', 'VidSrc', `${vsBase}?autoplay=true`);
-  }
-
-  // VidRock — TMDB
-  if (kind !== 'al') {
-    const vrBase = kind === 'movie'
-      ? `https://vidrock.to/embed/movie/${id}`
-      : `https://vidrock.to/embed/tv/${id}/${season}/${episode}`;
-    add('vidrock', 'VidRock', vrBase);
-  }
-
-  // VidSrc.io — TMDB
-  if (kind !== 'al') {
-    const vsioBase = kind === 'movie'
-      ? `https://vidsrc.io/embed/movie/${id}`
-      : `https://vidsrc.io/embed/tv/${id}/${season}/${episode}`;
-    add('vidsrcio', 'VidSrc.io', vsioBase);
-  }
-
-  // VidSrc.to — TMDB
-  if (kind !== 'al') {
-    const vstoBase = kind === 'movie'
-      ? `https://vidsrc.to/embed/movie/${id}`
-      : `https://vidsrc.to/embed/tv/${id}/${season}/${episode}`;
-    add('vidsrcto', 'VidSrc.to', vstoBase);
-  }
-
-  // VidSrc.mov — TMDB
-  if (kind !== 'al') {
-    const vsmovBase = kind === 'movie'
-      ? `https://vidsrc.mov/embed/movie/${id}`
-      : `https://vidsrc.mov/embed/tv/${id}/${season}/${episode}`;
-    add('vidsrcmov', 'VidSrc.mov', vsmovBase);
-  }
-
-  // VidLink — TMDB
-  if (kind !== 'al') {
-    const vlBase = kind === 'movie'
-      ? `https://vidlink.pro/movie/${id}`
-      : `https://vidlink.pro/tv/${id}/${season}/${episode}`;
-    const vlp = new URLSearchParams();
-    vlp.set('primaryColor', color);
-    vlp.set('title', 'true');
-    if (kind === 'tv') vlp.set('nextbutton', 'true');
-    add('vidlink', 'VidLink', `${vlBase}?${vlp}`);
-  }
-
-  // MegaPlay — AniList (anime)
-  if (alId) add('megaplay', 'MegaPlay', `https://megaplay.buzz/stream/ani/${alId}/${episode}/sub`);
-
-  // VidHawk — AniList (anime)
-  if (kind === 'al' && alId) {
-    add('vidhawk', 'VidHawk', `https://vidhawk.buzz/embed/ani/${alId}/${episode}/sub?server=flow&autoskipIntro=1&autoskipOutro=1`);
-  }
-
-  // JustPlay — AniList (anime)
-  if (kind === 'al' && alId) {
-    add('justplay', 'JustPlay', `https://justplay.boo/?ani=${alId}&ep=${episode}&lang=sub&autoskip=1`);
-  }
-
-  // AniEmbed — AniList (anime)
-  if (kind === 'al' && alId) {
-    add('aniembed', 'AniEmbed', `https://aniembed.se/e/${alId}/${episode}`);
-  }
-
-  // YapGrid — reklamsız, altyazı çevirisi destekli
-  if (kind !== 'al') {
-    const ygBase = kind === 'movie'
-      ? `https://yapgrid.com/embed/movie/${id}`
-      : `https://yapgrid.com/embed/tv/${id}/${season}/${episode}`;
-    add('yapgrid', 'YapGrid', `${ygBase}?autoplay=1`);
-  }
-
-  // StreamFlizo — film/dizi/anime, TMDB ID
-  if (kind !== 'al') {
-    const sfBase = kind === 'movie'
-      ? `https://streamflizoapi.top/stream/tmdb/${id}/multi`
-      : `https://streamflizoapi.top/stream/tmdb/${id}/${season}/${episode}/multi`;
-    add('streamflizo', 'StreamFlizo', sfBase);
-  }
-
-  // 2Embed — ücretsiz, TMDB/IMDB
-  if (kind !== 'al') {
-    const twoBase = kind === 'movie'
-      ? `https://www.2embed.stream/embed/movie/${id}`
-      : `https://www.2embed.stream/embed/tv/${id}/${season}/${episode}`;
-    add('2embed', '2Embed', twoBase);
-  }
-
-  // HnEmbed — 2embed türevi
-  if (kind !== 'al') {
-    const hnBase = kind === 'movie'
-      ? `https://hnembed.cc/embed/movie/${id}`
-      : `https://hnembed.cc/embed/tv/${id}/${season}/${episode}`;
-    add('hnembed', 'HnEmbed', hnBase);
-  }
-
-  // VidZen — 9 failover server
-  if (kind !== 'al') {
-    const vzBase = kind === 'movie'
-      ? `https://vidzen.fun/movie/${id}?autoPlay=true`
-      : `https://vidzen.fun/tv/${id}/${season}/${episode}?autoPlay=true`;
-    add('vidzen', 'VidZen', vzBase);
-  }
-
-  // MyCineBy — HLS/MP4 çok kaynak
-  if (kind !== 'al') {
-    const mcBase = kind === 'movie'
-      ? `https://mycineby.cc/embed/movie/${id}?color=e4202b&autoplay=true`
-      : `https://mycineby.cc/embed/tv/${id}/${season}/${episode}?color=e4202b&autoplay=true`;
-    add('mycineby', 'MyCineBy', mcBase);
-  }
-
-  // AutoEmbed — çok kaynaklı
-  if (kind !== 'al') {
-    const aeBase = kind === 'movie'
-      ? `https://autoembed.co/movie/tmdb/${id}`
-      : `https://autoembed.co/tv/tmdb/${id}-${season}-${episode}`;
-    add('autoembed', 'AutoEmbed', aeBase);
-  }
-
-  return list;
-}
 let configured = false;
 let authProblem = null;
 let lastOk = null;
@@ -454,7 +288,8 @@ async function api(url, env) {
     // OMDb ile zenginleştir (sadece film/dizi, anime değil)
     if (m[1] !== 'al' && env.OMDB_API_KEY) {
       try {
-        const omdbUrl = `https://www.omdbapi.com/?i=${titleData.imdbId || ''}&tmdbId=${m[2]}&type=${m[1] === 'movie' ? 'movie' : 'series'}&apikey=${env.OMDB_API_KEY}&plot=short`;
+        if (!titleData.imdb) throw Error('imdb id yok');
+        const omdbUrl = `https://www.omdbapi.com/?i=${encodeURIComponent(titleData.imdb)}&apikey=${env.OMDB_API_KEY}&plot=short`;
         const omdbRes = await fetch(omdbUrl, {signal: AbortSignal.timeout(4000), cf: {cacheTtl: 3600, cacheEverything: true}});
         if (omdbRes.ok) {
           const omdb = await omdbRes.json().catch(() => ({}));
@@ -481,81 +316,35 @@ async function api(url, env) {
   if (m) {
     const season = int(q.get('s'));
     const episode = int(q.get('e'));
-    const alId = q.get('alId') ? Number(q.get('alId')) : null;
+    const alId = /^\d{1,9}$/.test(q.get('alId') || '') ? Number(q.get('alId')) : null;
+    const malId = /^\d{1,9}$/.test(q.get('malId') || '') ? Number(q.get('malId')) : null;
+    const animeEpisode = /^\d{1,5}$/.test(q.get('aep') || '') ? Number(q.get('aep')) : null;
     const kind = m[1];
     const id = m[2];
-
-    // KV / MEDIA_SOURCES_JSON / MEDIA_SOURCE_API'den yerel kaynaklar
-    const sources = await cloudSources(env, mediaKey(kind, id, season, episode));
-
-    // Embed sağlayıcıları — iframe tabanlı, kurulum gerektirmez
-    const brandColor = (env.VIDRIFT_COLOR || 'e4202b').replace('#', '');
-    const brand = (env.VIDRIFT_BRAND || 'LOVELL').slice(0, 28);
-    const brandLogo = env.VIDRIFT_LOGO || '';
-    const embeds = buildEmbeds(kind, id, alId, season, episode, {brand, brandColor, brandLogo});
-    const vidrift = embeds.find(e => e.id === 'vidrift')?.url || null;
-
-    // VidRock, Anthology ve CloseLoad — paralel çalıştır, toplam max 12s
-    const [vidRockSources, anthologySources, closeloadSources] = await Promise.all([
-      // VidRock Resolver
-      (async () => {
-        if (!env.VIDROCK_RESOLVER_URL || kind === 'al') return [];
-        try {
-          const vrParams = new URLSearchParams({type: kind, id, season: String(season), episode: String(episode)});
-          const vrRes = await fetch(`${env.VIDROCK_RESOLVER_URL}/api/resolve?${vrParams}`, {
-            signal: AbortSignal.timeout(10000),
-            headers: {Accept: 'application/json'},
-          });
-          if (!vrRes.ok) return [];
-          const vrData = await vrRes.json().catch(() => ({}));
-          return (vrData.sources || vrData.streams || []).filter(s => {
-            try { const u = new URL(s?.url); return u.protocol === 'https:'; } catch { return false; }
-          }).map(s => ({
-            name: `VidRock · ${s.server || s.quality || 'HLS'}`,
-            origin: 'vidrock-resolved',
-            url: s.url,
-            type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
-            subtitles: [],
-          }));
-        } catch { return []; }
-      })(),
-
-      // Anthology Scraper — Türkçe kaynaklar
-      (async () => {
-        if (!env.ANTHOLOGY_SCRAPER_URL) return [];
-        try {
-          const antParams = new URLSearchParams({tmdbId: id, type: kind, season: String(season), episode: String(episode)});
-          const antRes = await fetch(`${env.ANTHOLOGY_SCRAPER_URL}/api/all?${antParams}`, {
-            signal: AbortSignal.timeout(12000),
-            headers: {Accept: 'application/json'},
-          });
-          if (!antRes.ok) return [];
-          const antData = await antRes.json().catch(() => ({}));
-          return (antData.sources || []).filter(s => {
-            try { const u = new URL(s?.url); return u.protocol === 'https:'; } catch { return false; }
-          }).map(s => ({
-            name: s.name || 'Türkçe',
-            origin: 'anthology',
-            url: s.url,
-            type: s.type === 'hls' || /\.m3u8/i.test(s.url) ? 'hls' : 'mp4',
-            subtitles: s.subtitles || [],
-          }));
-        } catch { return []; }
-      })(),
-
-      // CloseLoad (filmmakinesi.to)
-      (async () => {
-        if (kind !== 'movie') return [];
-        try {
-          return await Promise.race([
-            fetchCloseLoad(id, env),
-            new Promise(resolve => setTimeout(() => resolve([]), 10000)),
-          ]);
-        } catch { return []; }
-      })(),
-    ]);
-
-    return json({sources: [...sources, ...vidRockSources, ...anthologySources, ...closeloadSources], embeds, vidrift, folder: `${kind}-${id}`, cloud: true});
+    // phase=fast: KV kaynakları + embed adresleri (anında). phase=remote: doğrudan akış bulan servisler.
+    const phase = q.get('phase');
+    const out = {folder: `${kind}-${id}`, cloud: true};
+    if (phase !== 'remote') {
+      out.sources = await cloudSources(env, mediaKey(kind, id, season, episode));
+      out.embeds = buildEmbeds(kind, id, alId, season, episode, {brand: (env.VIDRIFT_BRAND || 'LOVELL').slice(0, 28), brandColor: env.VIDRIFT_COLOR || 'e4202b', brandLogo: env.VIDRIFT_LOGO || '', malId, animeEpisode});
+      out.vidrift = out.embeds.find(e => e.id === 'vidrift')?.url || null;
+    }
+    if (phase !== 'fast') {
+      const info = kind === 'al' ? null : await Promise.race([detail(kind, id).catch(() => null), new Promise(r => setTimeout(r, 4000))]);
+      const hint = info ? {title: info.title, original: info.original, year: info.year, imdb: info.imdb} : null;
+      const remote = await fetchRemoteSources({kind, id, alId, season, episode, hint}, {
+        anthologyUrl: env.ANTHOLOGY_SCRAPER_URL,
+        vidrockUrl: env.VIDROCK_RESOLVER_URL,
+        cineproUrl: env.CINEPRO_URL,
+        deadline: /^\d{4,5}$/.test(q.get('budget') || '') ? Math.min(20000, Math.max(2500, Number(q.get('budget')))) : 14000,
+        // CloseLoad yalnızca filmlerde; Worker içinde çalışır
+        extra: kind === 'movie' ? [{id: 'closeload', run: async () => normalizeSources(await fetchCloseLoad(id, env), 'closeload')}] : [],
+      });
+      out.sources = [...(out.sources || []), ...remote.sources];
+      out.report = remote.report;
+      out.timedOut = remote.timedOut;
+    }
+    return json(out);
   }
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);

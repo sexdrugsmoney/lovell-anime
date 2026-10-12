@@ -61,12 +61,12 @@ test('yayınlanmamış bölümler listelenmez', async () => {
   assert.deepEqual(d.episodes.map(e => e.n), [1]);
 });
 test('yerel video dosyaları bulunur, aralık isteği desteklenir', async () => {
-  const p1 = await (await get('/api/play/tv/1?s=1&e=1')).json();
+  const p1 = await (await get('/api/play/tv/1?s=1&e=1&phase=fast')).json();
   assert.equal(p1.sources.length, 1);
   const r = await fetch(base + p1.sources[0].url, {headers: {range: 'bytes=0-99'}});
   assert.equal(r.status, 206);
   assert.equal((await r.arrayBuffer()).byteLength, 100);
-  const p2 = await (await get('/api/play/tv/1?s=1&e=2')).json();
+  const p2 = await (await get('/api/play/tv/1?s=1&e=2&phase=fast')).json();
   assert.equal(p2.sources[0].type, 'webm');
   const vtt = await (await get(p2.sources[0].subtitles[0].url)).text();
   assert.match(vtt, /^WEBVTT/);
@@ -97,4 +97,14 @@ test('query biçimli vekil (?endpoint=) doğru adrese çevrilir', async () => {
   assert.equal(u.searchParams.get('endpoint'), '/discover/tv');
   assert.equal(u.searchParams.get('with_keywords'), '210024');
   assert.equal(u.searchParams.get('api_key'), null);
+});
+test('oynatma uç noktası: hızlı aşama embed adreslerini ağ isteği olmadan döndürür', async () => {
+  const t0 = Date.now();
+  const p = await (await get('/api/play/tv/1?s=1&e=2&alId=151807&phase=fast')).json();
+  assert.ok(Date.now() - t0 < 1500);
+  assert.ok(p.embeds.some(e => e.id === 'framex' && e.url.includes('/embed/tv/1/1/2')));
+  assert.ok(p.embeds.some(e => e.id === 'megaplay-dub'));
+  assert.equal(p.embeds[0].anime, true);
+  assert.equal(p.vidrift?.includes('/embed/tv/1/1/2'), true);
+  assert.equal(p.report, undefined);
 });

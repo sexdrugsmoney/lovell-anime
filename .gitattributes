@@ -1,0 +1,3 @@
+# Linux sunucuda çalışan betikler her zaman LF satır sonuyla saklanır
+*.sh text eol=lf
+deploy/oracle/Caddyfile text eol=lf
