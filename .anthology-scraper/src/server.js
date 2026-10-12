@@ -178,9 +178,9 @@ async function liveOnly(list) {
 // herhangi bir adresi açan bir vekil değildir.
 const PROXY = new LRUCache(6000, 4 * 3600 * 1000);
 const UA_DESKTOP = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
-function proxyToken(url, referer) {
+function proxyToken(url, referer, vtt) {
   const token = crypto.randomBytes(12).toString('base64url');
-  PROXY.set(token, { url, referer });
+  PROXY.set(token, vtt ? { url, referer, vtt } : { url, referer });
   return token;
 }
 const publicBase = req => `${req.headers['x-forwarded-proto'] || req.protocol}://${req.headers['x-forwarded-host'] || req.get('host')}`;
@@ -207,6 +207,7 @@ app.get('/proxy/:token', async (req, res) => {
     }
     res.status(up.status);
     for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) { const v = up.headers.get(h); if (v) res.setHeader(h, v); }
+    if (entry.vtt) res.setHeader('Content-Type', 'text/vtt; charset=utf-8'); // altyazı dosyaları .html uzantısıyla gelebiliyor
     res.setHeader('Cache-Control', 'public, max-age=300');
     if (!up.body) return res.end();
     up.body.on('error', () => res.destroy()).pipe(res);
@@ -670,7 +671,7 @@ app.get('/api/sinewix', async (req, res) => {
 });
 
 // ---- DiziMom ----
-const DIZIMOM_BASE = 'https://www.dizimom.diy';
+const DIZIMOM_BASE = process.env.DIZIMOM_BASE || 'https://www.dizimom.cafe'; // alan adı değişirse yalnızca burayı güncelle
 const DIZIMOM_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36';
 
 app.get('/api/dizimom', async (req, res) => {
@@ -686,106 +687,85 @@ app.get('/api/dizimom', async (req, res) => {
     const name = tmdb.name || tmdb.original_name;
     if (!name) throw new Error('TMDB başlık bulunamadı');
 
-    // 2. DiziMom arama
-    const searchRes = await fetch(`${DIZIMOM_BASE}/?s=${encodeURIComponent(name)}`, {
-      signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': DIZIMOM_UA, 'Referer': DIZIMOM_BASE },
-    });
-    if (!searchRes.ok) throw new Error(`DiziMom arama HTTP ${searchRes.status}`);
-    const searchHtml = await searchRes.text();
+    const names = [...new Set(nameList(tmdb).filter(Boolean))];
+    const get = (url, referer) => fetch(url, { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': DIZIMOM_UA, 'Referer': referer || `${DIZIMOM_BASE}/` } });
 
-    // 3. Parse et — slug bul
-    const $s = cheerio.load(searchHtml);
-    let slug = null;
-
-    // Primary selectors
-    const primaryHref = $s('.single-item .categorytitle a, article.single-item h2 a').first().attr('href');
-    if (primaryHref) {
-      const m = primaryHref.match(/\/diziler\/([^/]+)\//);
-      if (m) slug = m[1];
+    // 2. Arama — dizi sayfaları "/diziler/{n}-{ad}-izle-hd/" ve "/diziler/{ad}-turkce-dublaj-izle/" biçiminde.
+    // Altyazılı ve dublaj ayrı dizi sayfalarıdır; adı tam eşleşenlerin hepsi alınır.
+    const want = names.map(norm).filter(Boolean);
+    const showKey = s => norm(s.replace(/^\d+-/, '').replace(/-izle.*$/, '').replace(/-turkce-dublaj.*$/, '').replace(/-/g, ' '));
+    let shows = [];
+    for (const n of names.slice(0, 2)) {
+      const r = await get(`${DIZIMOM_BASE}/?s=${encodeURIComponent(n)}`);
+      if (!r.ok) throw new Error(`DiziMom arama HTTP ${r.status}`);
+      const html = await r.text();
+      const slugs = [...new Set([...html.matchAll(/\/diziler\/([a-z0-9-]+)\//g)].map(m => m[1]))];
+      shows = slugs.filter(s => want.includes(showKey(s)));
+      if (shows.length) break;
     }
+    if (!shows.length) throw new Error('DiziMom eşleşme bulunamadı');
 
-    // Fallback
-    if (!slug) {
-      const fallbackHref = $s('a[href*="/diziler/"]').first().attr('href');
-      if (fallbackHref) {
-        const m = fallbackHref.match(/\/diziler\/([^/]+)\//);
-        if (m) slug = m[1];
-      }
+    // 3. Her dizi sayfasında bölümü bul ("...-{s}-sezon-{e}-bolum-..."), oynatıcıdan HLS adresini al
+    const epRe = new RegExp(`href="([^"]*[/-]${Number(season)}-sezon-${Number(episode)}-bolum[^"]*)"`);
+    // Yerli diziler sezonsuz, mutlak bölüm numarasıyla listelenir ("kurulus-osman-12-bolum-izle")
+    let absEp = Number(episode);
+    if (Number(season) > 1) {
+      try { const full = await tmdbFetch('tv', tmdbId); absEp = (full.seasons || []).filter(x => x.season_number > 0 && x.season_number < Number(season)).reduce((a, x) => a + (x.episode_count || 0), 0) + Number(episode); }
+      catch { absEp = 0; }
     }
-
-    if (!slug) throw new Error('DiziMom slug bulunamadı');
-
-    // 4. Show sayfası
-    const showRes = await fetch(`${DIZIMOM_BASE}/diziler/${slug}/`, {
-      signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': DIZIMOM_UA, 'Referer': `${DIZIMOM_BASE}/?s=${encodeURIComponent(name)}` },
-    });
-    if (!showRes.ok) throw new Error(`DiziMom show sayfası HTTP ${showRes.status}`);
-    const showHtml = await showRes.text();
-    const $show = cheerio.load(showHtml);
-
-    // 5. Bölüm linkini bul
-    const epSelector = `a[href*="${season}-sezon-${episode}-bolum"], a[href*="-sezon"][href*="-bolum"]`;
-    const epHref = $show(epSelector).first().attr('href')
-      || $show('a[href*="-sezon"][href*="-bolum"]').filter((_i, el) => {
-        const h = $show(el).attr('href') || '';
-        return h.includes(`${season}-sezon`) && h.includes(`${episode}-bolum`);
-      }).first().attr('href');
-
-    if (!epHref) throw new Error('DiziMom bölüm linki bulunamadı');
-
-    // 6. Bölüm sayfasını çek, iframe src'leri topla
-    const epRes = await fetch(epHref, {
-      signal: AbortSignal.timeout(10000),
-      headers: { 'User-Agent': DIZIMOM_UA, 'Referer': `${DIZIMOM_BASE}/diziler/${slug}/` },
-    });
-    if (!epRes.ok) throw new Error(`DiziMom bölüm sayfası HTTP ${epRes.status}`);
-    const epHtml = await epRes.text();
-    const $ep = cheerio.load(epHtml);
-
-    const iframeSrcs = [];
-    $ep('iframe[src*="hdplayersystem"], iframe[src*="hdstreamable"], iframe[src*="filmizle"]').each((_i, el) => {
-      const src = $ep(el).attr('src');
-      if (src) iframeSrcs.push(src);
-    });
-
-    if (iframeSrcs.length === 0) throw new Error('DiziMom uyumlu iframe bulunamadı');
-
-    // 7. İlk geçerli iframe için HDPlayer POST
-    let videoUrl = null;
-    for (const iframeSrc of iframeSrcs) {
+    const absRe = absEp ? new RegExp(`href="(${DIZIMOM_BASE.replace(/[.]/g, '\\.')}/[a-z0-9-]*?-${absEp}-bolum[^"]*)"`) : null;
+    const sources = [], seenIds = new Set(); // altyazılı ve dublaj sayfaları aynı videoyu gösterebilir
+    await Promise.all(shows.slice(0, 3).map(async slug => {
       try {
-        const iframeUrl = new URL(iframeSrc);
-        const dataParam = iframeUrl.searchParams.get('data');
-        if (!dataParam) continue;
+        const showUrl = `${DIZIMOM_BASE}/diziler/${slug}/`;
+        const sr = await get(showUrl);
+        if (!sr.ok) return;
+        const showHtml = await sr.text();
+        const yerli = !/-sezon-\d+-bolum/.test(showHtml);
+        const epHref = (yerli ? absRe && showHtml.match(absRe) : showHtml.match(epRe))?.[1];
+        if (!epHref) return;
+        const er = await get(epHref, showUrl);
+        if (!er.ok) return;
+        // iframe'ler tembel yüklenir (src="about:blank", data-src=...) — her iki niteliği de tara.
+        // FirePlayer biçimleri: /player/index.php?data={id} (eski) ve /embed/{id} (yeni). hdstreamable /tv/video/ telif uyarısı videosu döndürüyor → alınmaz.
+        const iframeSrcs = [...new Set([...(await er.text()).matchAll(/<iframe[^>]+?(?:data-src|src)="(https?:\/\/[^"]*\/(?:player\/index\.php\?data=|embed\/)[^"]+)"/g)].map(m => m[1]))];
+        for (const iframeSrc of iframeSrcs) {
+          const iframeUrl = new URL(iframeSrc);
+          const dataParam = iframeUrl.searchParams.get('data') || iframeUrl.pathname.match(/\/embed\/([A-Za-z0-9]+)/)?.[1];
+          if (!dataParam || seenIds.has(dataParam)) continue;
+          seenIds.add(dataParam);
+          const postRes = await fetch(`https://${iframeUrl.host}/player/index.php?data=${dataParam}&do=getVideo`, {
+            method: 'POST', signal: AbortSignal.timeout(10000),
+            body: new URLSearchParams({ hash: dataParam, r: epHref }),
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded', 'Referer': iframeSrc, 'User-Agent': DIZIMOM_UA },
+          }).catch(() => null);
+          if (!postRes?.ok) continue;
+          const d = await postRes.json().catch(() => ({}));
+          const url = d.securedLink || d.videoSource;
+          if (!url) continue;
+          const referer = `https://${iframeUrl.host}/`;
+          // Yeni oynatıcıda altyazı ayrı VTT izi, ses izleri (tur/eng) ana listede
+          let subtitles, dual = false;
+          if (/\/embed\//.test(iframeSrc)) {
+            try {
+              const eh = await (await fetch(iframeSrc, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': DIZIMOM_UA, Referer: epHref } })).text();
+              const tracks = JSON.parse(getAndUnpack(eh).match(/"tracks":(\[[^\]]*\])/)?.[1] || '[]');
+              subtitles = tracks.filter(t => t.file && /captions|subtitles/.test(t.kind || 'captions')).map(t => ({ label: /tur/i.test(t.language || t.label) ? 'Türkçe' : t.label, lang: /tur/i.test(t.language || t.label) ? 'tr' : (t.language || ''), url: String(t.file).replace(/\\+\//g, '/'), proxy: true }));
+            } catch { /* altyazısız devam */ }
+            try { dual = /TYPE=AUDIO[^\n]*LANGUAGE="tur"/.test(await (await fetch(url, { signal: AbortSignal.timeout(6000), headers: { 'User-Agent': DIZIMOM_UA, Referer: referer } })).text()); } catch {}
+          }
+          const dub = dual || /turkce-dublaj/.test(slug + epHref);
+          // Yerli dizi: ses zaten Türkçe → 'tr-dub' (Türkçe ses) olarak işaretlenir
+          const name = yerli ? 'DiziMom (Türkçe)' : dual ? 'DiziMom (TR Dublaj + Altyazı)' : dub ? 'DiziMom (TR Dublaj)' : 'DiziMom (TR Altyazı)';
+          // Segmentler yalnızca oynatıcı alan adına CORS izni veriyor → Referer ile güvenli geçitten oynatılır
+          sources.push({ url, quality: '1080p', name, type: 'hls', lang: dub || yerli ? 'tr-dub' : 'tr', referer, ...(subtitles?.length ? { subtitles } : {}) });
+          break;
+        }
+      } catch { /* sıradaki dizi sayfası */ }
+    }));
+    if (!sources.length) throw new Error('DiziMom bölüm/oynatıcı bulunamadı');
 
-        const postUrl = `https://${iframeUrl.host}/player/index.php?data=${dataParam}&do=getVideo`;
-        const body = new URLSearchParams({ hash: dataParam, r: epHref });
-
-        const postRes = await fetch(postUrl, {
-          method: 'POST',
-          signal: AbortSignal.timeout(10000),
-          body,
-          headers: {
-            'X-Requested-With': 'XMLHttpRequest',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Referer': iframeSrc,
-            'User-Agent': DIZIMOM_UA,
-          },
-        });
-        if (!postRes.ok) continue;
-        const postData = await postRes.json().catch(() => ({}));
-        const url = postData.securedLink || postData.videoSource;
-        if (url) { videoUrl = url; break; }
-      } catch {
-        // try next iframe
-      }
-    }
-
-    if (!videoUrl) throw new Error('DiziMom video URL bulunamadı');
-
-    const result = { sources: [{ url: videoUrl, quality: '1080p', name: 'DiziMom', type: 'hls', lang: 'tr' }] };
+    const result = { sources };
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
@@ -894,7 +874,7 @@ app.get('/api/ddizi', async (req, res) => {
   if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
   try {
     const r = await fetch(
-      `${url}/api/ddizi?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`,
+      `${url}/api/ddizi?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}&title=${encodeURIComponent(req.query.title || '')}&original=${encodeURIComponent(req.query.original || '')}`,
       { signal: AbortSignal.timeout(30000) }
     );
     res.json(await r.json());
@@ -1091,159 +1071,85 @@ app.get('/api/closeload', async (req, res) => {
 });
 
 // ---- WebteIzle ----
+// Yalnızca film sitesi (diziler sezonlukdizi.org'a gider). Akış: arama.asp → /izle/{dublaj|altyazi}/{slug}
+// sayfasındaki id="wip" data-id → dataAlternatif3.asp (dil 0=dublaj, 1=altyazı) → dataEmbed.asp (HTML iframe).
+// Not: dataAlternatif3/dataEmbed uçları Cloudflare kuralıyla veri merkezi IP'lerine 403 verebiliyor; o durumda hızlıca vazgeçilir.
+const WEBTEIZLE_BASE = process.env.WEBTEIZLE_BASE || 'https://webteizle.info'; // alan adı değişirse yalnızca burayı güncelle
 app.get('/api/webteizle', async (req, res) => {
-  const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
+  const { tmdbId, type = 'movie' } = req.query;
   if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
-  const cacheKey = `webteizle:${tmdbId}:${type}:${season}:${episode}`;
+  if (type !== 'movie') return res.json({ sources: [], error: 'WebteIzle yalnızca film' });
+  const cacheKey = `webteizle:${tmdbId}:movie`;
   const hit = cache.get(cacheKey);
   if (hit) return res.json(hit);
 
-  const WEBT_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/137.0.0.0 Safari/537.36';
-  const WEBT_HEADERS = {
-    'User-Agent': WEBT_UA,
-    'Accept': 'text/html,application/xhtml+xml',
-    'Accept-Language': 'tr-TR,tr;q=0.9',
-    'Referer': 'https://webteizle.info/',
-  };
+  const WEBT_HEADERS = { 'User-Agent': UA_DESKTOP, 'Accept-Language': 'tr-TR,tr;q=0.9', 'Referer': `${WEBTEIZLE_BASE}/` };
+  const ajax = (path, body, referer) => fetch(`${WEBTEIZLE_BASE}/ajax/${path}`, {
+    method: 'POST', signal: AbortSignal.timeout(9000), body: new URLSearchParams(body).toString(),
+    headers: { ...WEBT_HEADERS, 'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8', 'X-Requested-With': 'XMLHttpRequest', ...(referer ? { Referer: referer } : {}) },
+  });
+  // Site windows-1254 kodlamasıyla yanıt veriyor
+  // (small-icu Node sürümlerinde TextDecoder bu kodlamayı tanımıyor → latin1 + Türkçe harf eşlemesi)
+  const TR1254 = { 0xD0: 'Ğ', 0xDD: 'İ', 0xDE: 'Ş', 0xF0: 'ğ', 0xFD: 'ı', 0xFE: 'ş' };
+  const text = async r => { const b = Buffer.from(await r.arrayBuffer()); let s = ''; for (const c of b) s += TR1254[c] || String.fromCharCode(c); return s; };
 
   try {
-    // 1. TMDB'den TR + orijinal başlık al
-    let tmdb;
-    if (type === 'movie') {
-      tmdb = await tmdbMovie(tmdbId);
-    } else {
-      tmdb = await tmdbTv(tmdbId);
+    const tmdb = await tmdbMovie(tmdbId);
+    const names = [...new Set(nameList(tmdb).filter(Boolean))];
+    const year = yearNum(tmdb);
+    if (!names.length) throw new Error('TMDB başlık bulunamadı');
+
+    // 1. Arama — sonuç: {status, results:{filmler:{results:[{title:"Avengers: Endgame (2019)", description:"<TR ad>", url:"/hakkinda/<slug>"}]}}}
+    let found = null;
+    for (const q of names.slice(0, 2)) {
+      const r = await ajax('arama.asp', { q });
+      if (r.status === 403) throw new Error('WebteIzle Cloudflare engeli (HTTP 403)'); // aşılmaz, hızlıca vazgeç
+      if (!r.ok) continue;
+      let d; try { d = JSON.parse(await text(r)); } catch { continue; }
+      const list = (d?.results?.filmler?.results || d?.data?.results?.filmler?.results || []).map(x => ({
+        ...x, name: String(x.title || '').replace(/\s*\(\d{4}\)\s*$/, ''), original_name: x.description, year: String(x.title || '').match(/\((\d{4})\)/)?.[1],
+      }));
+      found = pickMatch(list, tmdbId, names, year);
+      if (found?.url) break;
     }
-    const trTitle = tmdb.title || tmdb.name || '';
-    const origTitle = tmdb.original_title || tmdb.original_name || '';
+    if (!found?.url) throw new Error('WebteIzle eşleşme bulunamadı');
+    const slug = found.url.split('/').filter(Boolean).pop();
 
-    const slugTr = toSlug(trTitle);
-    const slugEn = toSlug(origTitle);
-
-    // 2. URL'leri dene
-    const urlsToTry = [
-      `https://webteizle.info/izle/dublaj/${slugTr}`,
-      `https://webteizle.info/izle/altyazi/${slugTr}`,
-      `https://webteizle.info/izle/dublaj/${slugEn}`,
-      `https://webteizle.info/izle/altyazi/${slugEn}`,
-    ].filter(u => !u.endsWith('/'));
-
-    let filmId = null;
-    let langHint = 'tr-dub';
-
-    for (const tryUrl of urlsToTry) {
-      try {
-        const r = await fetch(tryUrl, { signal: AbortSignal.timeout(10000), headers: WEBT_HEADERS });
-        if (!r.ok) continue;
-        const html = await r.text();
-        const m = html.match(/button[^>]+id=["']wip["'][^>]+data-id=["'](\d+)["']/) ||
-                  html.match(/data-id=["'](\d+)["']/);
-        if (m) {
-          filmId = m[1];
-          if (tryUrl.includes('/altyazi/')) langHint = 'tr-sub';
-          break;
-        }
-      } catch {
-        // try next
-      }
-    }
-
-    // 3. Fallback: POST arama
-    if (!filmId) {
-      const searchTitle = trTitle || origTitle;
-      const searchRes = await fetch('https://webteizle.info/ajax/arama.asp', {
-        method: 'POST',
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          ...WEBT_HEADERS,
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'X-Requested-With': 'XMLHttpRequest',
-        },
-        body: new URLSearchParams({ q: searchTitle }).toString(),
-      });
-      if (searchRes.ok) {
-        const searchData = await searchRes.json().catch(() => null);
-        const firstUrl = searchData?.data?.results?.filmler?.results?.[0]?.url;
-        if (firstUrl) {
-          const pageRes = await fetch(firstUrl.startsWith('http') ? firstUrl : `https://webteizle.info${firstUrl}`, {
-            signal: AbortSignal.timeout(10000),
-            headers: WEBT_HEADERS,
-          });
-          if (pageRes.ok) {
-            const pageHtml = await pageRes.text();
-            const m = pageHtml.match(/button[^>]+id=["']wip["'][^>]+data-id=["'](\d+)["']/) ||
-                      pageHtml.match(/data-id=["'](\d+)["']/);
-            if (m) filmId = m[1];
-          }
-        }
-      }
-    }
-
+    // 2. Film sayfası — filmId (id="wip" data-id) ve mevcut diller
+    const pageUrl = `${WEBTEIZLE_BASE}/izle/dublaj/${slug}`;
+    const pr = await fetch(pageUrl, { signal: AbortSignal.timeout(9000), headers: WEBT_HEADERS });
+    if (!pr.ok) throw new Error(`WebteIzle sayfa HTTP ${pr.status}`);
+    const html = await text(pr);
+    const filmId = html.match(/id=["']wip["'][^>]*data-id=["'](\d+)["']/)?.[1];
     if (!filmId) throw new Error('WebteIzle filmId bulunamadı');
+    const langs = [/data-dil="0"/.test(html) && '0', /data-dil="1"/.test(html) && '1'].filter(Boolean);
 
-    // 4. Embed listesini al
-    const altRes = await fetch('https://webteizle.info/ajax/dataAlternatif3.asp', {
-      method: 'POST',
-      signal: AbortSignal.timeout(10000),
-      headers: {
-        ...WEBT_HEADERS,
-        'Content-Type': 'application/x-www-form-urlencoded',
-        'X-Requested-With': 'XMLHttpRequest',
-      },
-      body: new URLSearchParams({
-        filmid: filmId,
-        dil: '0',
-        s: season,
-        b: episode,
-        bot: '0',
-      }).toString(),
-    });
-    if (!altRes.ok) throw new Error(`WebteIzle alternatif HTTP ${altRes.status}`);
-    const altData = await altRes.json().catch(() => null);
-    const embedList = altData?.data || altData?.results || altData || [];
-    const embedItems = Array.isArray(embedList) ? embedList : Object.values(embedList);
-
-    if (embedItems.length === 0) throw new Error('WebteIzle embed listesi boş');
-
-    // 5. Her embed için iframe src al, VidMoly ise m3u8 çıkar
+    // 3. Her dil için alternatif listesi → embed iframe → VidMoly ise m3u8
     const sources = [];
-    for (const item of embedItems.slice(0, 5)) {
-      try {
-        const embedId = item.id || item.embed_id;
-        if (!embedId) continue;
-
-        const embedRes = await fetch('https://webteizle.info/ajax/dataEmbed.asp', {
-          method: 'POST',
-          signal: AbortSignal.timeout(10000),
-          headers: {
-            ...WEBT_HEADERS,
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'X-Requested-With': 'XMLHttpRequest',
-          },
-          body: new URLSearchParams({ id: embedId }).toString(),
-        });
-        if (!embedRes.ok) continue;
-        const embedData = await embedRes.json().catch(() => null);
-        const iframeSrc = embedData?.iframe || embedData?.url || embedData?.src || embedData?.data;
-        if (!iframeSrc || typeof iframeSrc !== 'string') continue;
-
-        if (/vidmoly/i.test(iframeSrc)) {
-          const extracted = await extractVidMoly(iframeSrc, 'https://webteizle.info/');
-          if (extracted) {
-            sources.push({
-              url: extracted.url,
-              quality: '1080p',
-              name: 'WebteIzle (TR Dublaj)',
-              type: 'hls',
-              lang: langHint,
-              referer: extracted.referer,
-            });
-          }
-        }
-      } catch {
-        // try next embed
+    let blocked = false;
+    for (const dil of langs.length ? langs : ['0']) {
+      const ar = await ajax('dataAlternatif3.asp', { filmid: filmId, dil, s: '', b: '', bot: '0' }, pageUrl);
+      if (ar.status === 403) { blocked = true; break; }
+      if (!ar.ok) continue;
+      let alt; try { alt = JSON.parse(await text(ar)); } catch { continue; }
+      if (alt?.status !== 'success' || !Array.isArray(alt.data)) continue;
+      const dub = dil === '0';
+      for (const item of alt.data.slice(0, 6)) {
+        try {
+          const er = await ajax('dataEmbed.asp', { id: item.id }, pageUrl);
+          if (!er.ok) continue;
+          const body = await text(er);
+          const iframeSrc = body.match(/<iframe[^>]+src=["']([^"']+)["']/i)?.[1] || body.match(/(https?:\/\/(?:www\.)?vidmoly\.[a-z]+\/[^"'\s<]+)/i)?.[1];
+          if (!iframeSrc || !/vidmoly/i.test(iframeSrc)) continue;
+          const extracted = await extractVidMoly(iframeSrc.startsWith('//') ? `https:${iframeSrc}` : iframeSrc, `${WEBTEIZLE_BASE}/`);
+          if (!extracted) continue;
+          sources.push({ url: extracted.url, quality: '1080p', name: dub ? 'WebteIzle (TR Dublaj)' : 'WebteIzle (TR Altyazı)', type: 'hls', lang: dub ? 'tr-dub' : 'tr', referer: extracted.referer });
+          break;
+        } catch { /* sıradaki alternatif */ }
       }
     }
+    if (!sources.length && blocked) throw new Error('WebteIzle oynatıcı uçları sunucu IP\'sine kapalı (Cloudflare 403)');
+    if (!sources.length) throw new Error('WebteIzle oynatılabilir kaynak yok');
 
     const result = { sources };
     cache.set(cacheKey, result);
@@ -1254,6 +1160,25 @@ app.get('/api/webteizle', async (req, res) => {
 });
 
 // ---- LoveFilmIzle ----
+// WordPress sitesi; yazılar IMDb id ile aranabiliyor. Filmde tek yazı, dizide her sezon ayrı yazı ("...-{s}-sezon-izle").
+// İçerik "<!--nextpage-->" ile parçalara bölünür; her parçanın başlığında bayraklar (fl tr / fl en) ve
+// dizide "{n}.Bölüm" bulunur. Kaynaklar: VidMoly (bemoly sarmalayıcı), VideoSeyred (JSON çalma listesi), Pixeldrain.
+const LOVEFILMIZLE_BASE = process.env.LOVEFILMIZLE_BASE || 'https://lovefilmizle.net'; // alan adı değişirse yalnızca burayı güncelle
+async function extractVideoSeyred(embedUrl) {
+  const id = embedUrl.match(/\/embed\/(\d+)/)?.[1];
+  if (!id) return null;
+  const host = new URL(embedUrl).origin;
+  const r = await fetch(`${host}/playlist/${id}.json`, { signal: AbortSignal.timeout(8000), headers: { 'User-Agent': UA_DESKTOP, Referer: embedUrl } });
+  if (!r.ok) return null;
+  const item = (await r.json().catch(() => []))?.[0];
+  const file = item?.sources?.find(s => /^https:/.test(s.file || ''))?.file;
+  if (!file) return null;
+  const seen = new Set();
+  const subtitles = (item.tracks || []).filter(t => t.kind === 'captions' && /^https:/.test(t.file || '') && !seen.has(t.language) && seen.add(t.language))
+    .map(t => ({ label: t.label || 'Türkçe', lang: /tur/i.test(t.language || '') ? 'tr' : (t.language || ''), url: t.file }));
+  return { url: file, type: /\.m3u8/i.test(file) ? 'hls' : 'mp4', subtitles };
+}
+
 app.get('/api/lovefilmizle', async (req, res) => {
   const { tmdbId, type = 'movie', season = '1', episode = '1' } = req.query;
   if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
@@ -1263,80 +1188,57 @@ app.get('/api/lovefilmizle', async (req, res) => {
 
   try {
     // 1. IMDb ID al
-    let tmdb;
-    if (type === 'movie') {
-      tmdb = await tmdbMovieWithExternal(tmdbId);
-    } else {
-      tmdb = await tmdbTvWithExternal(tmdbId);
-    }
-    const imdbId = tmdb.external_ids?.imdb_id;
+    const tmdb = type === 'movie' ? await tmdbMovieWithExternal(tmdbId) : await tmdbTvWithExternal(tmdbId);
+    const imdbId = tmdb.external_ids?.imdb_id || tmdb.imdb_id;
     if (!imdbId) throw new Error('IMDb ID bulunamadı');
 
-    // 2. WordPress REST API
-    const wpRes = await fetch(
-      `https://lovefilmizle.net/wp-json/wp/v2/posts?search=${encodeURIComponent(imdbId)}&per_page=1`,
-      {
-        signal: AbortSignal.timeout(10000),
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          'Accept': 'application/json',
-          'Referer': 'https://lovefilmizle.net/',
-        },
-      }
-    );
+    // 2. WordPress REST API — IMDb id ile ara, film/sezon yazısını seç
+    const wpRes = await fetch(`${LOVEFILMIZLE_BASE}/wp-json/wp/v2/posts?search=${encodeURIComponent(imdbId)}&per_page=20&_fields=link,content,dil`, {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': UA_DESKTOP, 'Accept': 'application/json', 'Referer': `${LOVEFILMIZLE_BASE}/` },
+    });
     if (!wpRes.ok) throw new Error(`LoveFilmIzle WP API HTTP ${wpRes.status}`);
-    const wpData = await wpRes.json().catch(() => []);
-    if (!Array.isArray(wpData) || wpData.length === 0) throw new Error('LoveFilmIzle içerik bulunamadı');
+    const posts = await wpRes.json().catch(() => []);
+    if (!Array.isArray(posts) || !posts.length) throw new Error('LoveFilmIzle içerik bulunamadı');
+    const isSeason = p => /-\d+-sezon/.test(p.link || '');
+    const post = type === 'movie'
+      ? posts.find(p => !isSeason(p))
+      : posts.find(p => new RegExp(`-${Number(season)}-sezon`).test(p.link || ''));
+    if (!post) throw new Error(type === 'movie' ? 'LoveFilmIzle film bulunamadı' : 'LoveFilmIzle sezon bulunamadı');
 
-    const post = wpData[0];
-    const content = post?.content?.rendered || '';
-
-    // 3. Dil tespiti
-    let lang = 'tr';
-    const taxonomies = post?.dil || post?.categories || [];
-    const taxStr = JSON.stringify(taxonomies).toLowerCase();
-    if (taxStr.includes('turkce-dublaj') || taxStr.includes('dublaj') || content.includes('dublaj')) {
-      lang = 'tr-dub';
-    } else if (taxStr.includes('turkce-altyazili') || taxStr.includes('altyazili') || content.includes('altyazili')) {
-      lang = 'tr-sub';
-    }
-
-    // 4. VidMoly URL'sini çıkar
-    let vidmolyUrl = null;
-    const m1 = content.match(/src=["\']\/bemoly\/bemoly\.php\?url=(https:\/\/vidmoly[^&"']+)/);
-    const m2 = content.match(/src=["'](https:\/\/vidmoly[^"']+)/);
-    if (m1) vidmolyUrl = decodeURIComponent(m1[1]);
-    else if (m2) vidmolyUrl = m2[1];
+    // 3. Parçalar: başlık bayrakları + iframe. Dizide yalnızca istenen bölümün parçaları.
+    const parts = String(post.content?.rendered || '').split('<!--nextpage-->').map(html => {
+      const head = html.match(/<!--baslik:(.*?)-->/)?.[1] || '';
+      const flags = [...head.matchAll(/class=['"]fl (\w+)['"]/g)].map(m => m[1]);
+      const label = head.replace(/<[^>]+>/g, '').trim();
+      return { html, flags, label };
+    }).filter(p => type === 'movie' || new RegExp(`^${Number(episode)}\\.\\s*B[öo]l[üu]m`, 'i').test(p.label));
+    if (!parts.length) throw new Error('LoveFilmIzle bölüm bulunamadı');
 
     const sources = [];
-
-    if (vidmolyUrl) {
-      const extracted = await extractVidMoly(vidmolyUrl, 'https://lovefilmizle.net/');
-      if (extracted) {
-        sources.push({
-          url: extracted.url,
-          quality: '1080p',
-          name: 'LoveFilmIzle (TR)',
-          type: 'hls',
-          lang,
-          referer: extracted.referer,
-        });
-      }
-    }
-
-    // 5. Fallback: Pixeldrain
-    if (sources.length === 0) {
-      const pdUrl = extractPixeldrain(content);
-      if (pdUrl) {
-        sources.push({
-          url: pdUrl,
-          quality: '1080p',
-          name: 'LoveFilmIzle (Pixeldrain)',
-          type: 'mp4',
-          lang,
-        });
-      }
-    }
+    await Promise.all(parts.slice(0, 6).map(async p => {
+      try {
+        // Yalnızca TR bayrağı → Türkçe dublaj; EN (+TR) → orijinal ses, Türkçe altyazı
+        const dub = p.flags.includes('tr') && !p.flags.includes('en');
+        const lang = dub ? 'tr-dub' : 'tr';
+        const tag = dub ? 'TR Dublaj' : 'TR Altyazı';
+        const src = p.html.match(/<iframe[^>]+src=["']([^"']+)["']/i)?.[1] || '';
+        const vm = src.match(/[?&]url=(https?:\/\/(?:www\.)?vidmoly\.[a-z]+\/[^&"']+)/)?.[1] || (/vidmoly\./.test(src) ? src : null);
+        if (vm) {
+          const ex = await extractVidMoly(decodeURIComponent(vm), `${LOVEFILMIZLE_BASE}/`);
+          if (ex) sources.push({ url: ex.url, quality: '1080p', name: `LoveFilmIzle VidMoly (${tag})`, type: 'hls', lang, referer: ex.referer });
+          return;
+        }
+        if (/videoseyred\./.test(src)) {
+          const ex = await extractVideoSeyred(src.startsWith('//') ? `https:${src}` : src);
+          if (ex) sources.push({ url: ex.url, quality: '1080p', name: `LoveFilmIzle VideoSeyred (${tag})`, type: ex.type, lang, ...(ex.subtitles.length ? { subtitles: ex.subtitles } : {}) });
+          return;
+        }
+        const pd = extractPixeldrain(p.html);
+        if (pd) sources.push({ url: pd, quality: '1080p', name: `LoveFilmIzle Pixeldrain (${tag})`, type: 'mp4', lang });
+      } catch { /* sıradaki parça */ }
+    }));
+    if (!sources.length) throw new Error('LoveFilmIzle oynatılabilir kaynak yok (VidMoly dosyası silinmiş olabilir)');
 
     const result = { sources };
     cache.set(cacheKey, result);
@@ -1528,8 +1430,9 @@ app.get('/api/filmizlebabam', async (req, res) => {
   }
 });
 
-// Anizium API'si koruma belirteci istiyor (taklit edilmez), SineWix API'si 401 dönüyor.
-const LEGACY = new Set(['anizium', 'sinewix']);
+// Anizium API'si koruma belirteci istiyor (taklit edilmez), SineWix API'si 401 dönüyor. FilmizleBabam oynatıcısı
+// (pilavyerplay) origin kilitli jeton + heartbeat korumalı; taklit edilmez, bu yüzden taranmaz.
+const LEGACY = new Set(['anizium', 'sinewix', 'filmizlebabam']);
 
 const INFLIGHT = new Map();
 
@@ -1549,7 +1452,9 @@ app.get('/api/all', async (req, res) => {
     const out = sources.map(s => {
       if (!s.referer || !/^https:/.test(s.url || '')) return s;
       const { referer, ...rest } = s;
-      return { ...rest, url: `${base}/proxy/${proxyToken(s.url, referer)}`, name: `${s.name || 'Kaynak'}`, type: s.type || 'hls', proxied: true };
+      // Altyazılar da aynı Referer/CORS kısıtına tabi → onları da geçitten ver
+      const subtitles = Array.isArray(s.subtitles) ? s.subtitles.map(t => t?.url && /^https:/.test(t.url) && t.proxy ? { label: t.label, lang: t.lang, url: `${base}/proxy/${proxyToken(t.url, referer, true)}` } : t) : s.subtitles;
+      return { ...rest, ...(subtitles ? { subtitles } : {}), url: `${base}/proxy/${proxyToken(s.url, referer)}`, name: `${s.name || 'Kaynak'}`, type: s.type || 'hls', proxied: true };
     });
     // Aynı adres tekrarlanmasın.
     const seen = new Set();

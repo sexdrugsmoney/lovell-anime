@@ -336,8 +336,17 @@ def test_url(url: str = Query(...)):
         return {"error": str(ex)}
 
 
-DDIZI_BASE = "https://www.ddizi.im"
+DDIZI_BASE = "https://www.ddizi.tel"  # alan adı değişirse yalnızca burayı güncelle (eski: ddizi.im)
 DDIZI_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+
+
+def _ddizi_key(href: str):
+    """Bölüm linkinden sıralama anahtarı: (sezon, bölüm) ya da yerli dizide (0, mutlak bölüm)."""
+    m = re.search(r"-(\d+)-sezon-(\d+)-bolum", href)
+    if m:
+        return (int(m.group(1)), int(m.group(2)))
+    m = re.search(r"-(\d+)-bolum", href)
+    return (0, int(m.group(1))) if m else None
 
 
 @app.get("/api/ddizi")
@@ -345,142 +354,138 @@ def ddizi(
     tmdbId: str = Query(...),
     season: str = Query("1"),
     episode: str = Query("1"),
+    title: str = Query(""),
+    original: str = Query(""),
 ):
     cache_key = f"ddizi:{tmdbId}:{season}:{episode}"
     if cache_key in cache:
         return cache[cache_key]
 
     try:
-        # 1. TMDB'den TR + orijinal başlık al
-        tmdb_resp = cffi_requests.Session(impersonate="chrome131").get(
-            f"https://api.themoviedb.org/3/tv/{tmdbId}?api_key={TMDB_KEY}&language=tr-TR",
-            timeout=10,
-        )
-        if not tmdb_resp.ok:
-            return {"sources": [], "error": f"TMDB HTTP {tmdb_resp.status_code}"}
-        tmdb_data = tmdb_resp.json()
-        tr_title = tmdb_data.get("name") or tmdb_data.get("original_name") or ""
-        orig_title = tmdb_data.get("original_name") or ""
+        s, e = int(season), int(episode)
+        # 1. TMDB'den TR + orijinal başlık ve sezon bölüm sayıları (yerli dizilerde mutlak bölüm no için)
+        tmdb_data = {}
+        try:
+            r = cffi_requests.get(f"https://api.themoviedb.org/3/tv/{tmdbId}?api_key={TMDB_KEY}&language=tr-TR", timeout=8)
+            if r.ok:
+                tmdb_data = r.json()
+        except Exception:
+            pass
+        names = [n for n in dict.fromkeys([tmdb_data.get("name"), tmdb_data.get("original_name"), title, original]) if n]
+        if not names:
+            return {"sources": [], "error": "TMDB başlık bulunamadı"}
 
         session = cffi_requests.Session(impersonate="chrome131")
-        headers = {
-            "User-Agent": DDIZI_UA,
-            "Referer": DDIZI_BASE + "/",
-            "Accept-Language": "tr-TR,tr;q=0.9",
-        }
+        headers = {"User-Agent": DDIZI_UA, "Referer": DDIZI_BASE + "/", "Accept-Language": "tr-TR,tr;q=0.9"}
 
+        # 2. Arama: POST /arama/ (arama=...). Türkçe karakterler eşleşmiyor → ASCII'ye çevrilerek aranır.
+        # Dizi linkleri "/diziler/{id}/{ad}-hd15" / "{ad}-67" / "{ad}-son-bolum-izle" biçiminde; ad tam eşleşmeli.
+        def show_key(slug: str) -> str:
+            slug = re.sub(r"-son-bolum-izle$", "", slug)
+            slug = re.sub(r"-hd\d*$", "", slug)
+            slug = re.sub(r"-\d+$", "", slug)
+            return slug
+        want = {to_slug(n) for n in names}
         show_url = None
-        for q in filter(None, [tr_title, orig_title]):
-            search_resp = session.get(
-                f"{DDIZI_BASE}/?s={urllib.parse.quote(q)}",
-                headers=headers,
-                timeout=15,
-            )
-            if not search_resp.ok:
+        for q in names[:3]:
+            resp = session.post(f"{DDIZI_BASE}/arama/", data={"arama": to_slug(q).replace("-", " ")}, headers=headers, timeout=12)
+            if not resp.ok:
                 continue
-            html = search_resp.text
-            soup = BeautifulSoup(html, "html.parser")
-            q_low = q.lower().strip()
-            found = None
-            for a in soup.select(".search-result a, .entry-title a, .list-series a, .post-title a, h2 a"):
-                text = a.get_text(strip=True).lower().replace("izle", "").strip()
-                href = a.get("href", "")
-                if not href:
-                    continue
-                if text == q_low or text.startswith(q_low) or q_low in text:
-                    found = href
+            for href, slug in re.findall(r'href="(https?://[^"]+/diziler/\d+/([a-z0-9-]+))"', resp.text):
+                if show_key(slug) in want:
+                    show_url = href
                     break
-            if not found:
-                first = soup.select_one("a[href*='ddizi']")
-                if first:
-                    found = first.get("href")
-            if found:
-                show_url = found
+            if show_url:
                 break
-
         if not show_url:
             return {"sources": [], "error": "DDizi dizi sayfası bulunamadı"}
 
-        # 3. Dizi sayfasından bölüm linki bul
-        show_resp = session.get(show_url, headers=headers, timeout=15)
-        if not show_resp.ok:
-            return {"sources": [], "error": f"DDizi dizi sayfası HTTP {show_resp.status_code}"}
-        show_html = show_resp.text
+        # 3. Bölüm listesi sayfalı (sayfa-0 en yeni, en büyük sayfa en eski) → ikili arama.
+        # Kenar çubuğundaki diğer dizilerin "son bölüm" linkleri ad önekiyle ayıklanır.
+        slug_word = show_key(show_url.rstrip("/").split("/")[-1])
 
-        s = int(season)
-        e = int(episode)
+        def page_eps(p: int):
+            pr = session.get(f"{show_url}/sayfa-{p}", headers=headers, timeout=12)
+            html = pr.text if pr.ok else ""
+            eps = []
+            for h in dict.fromkeys(re.findall(r'href="(https?://[^"]+/izle/\d+/[^"]+\.htm)"', html)):
+                k = _ddizi_key(h)
+                if k and f"/{slug_word}-" in h:
+                    eps.append((k, h))
+            return html, eps
+
+        first_html, first_eps = page_eps(0)
+        last_page = max([int(x) for x in re.findall(r"/sayfa-(\d+)", first_html)] or [0])
+        yerli = bool(first_eps) and all(k[0] == 0 for k, _ in first_eps)
+        if yerli:
+            target = e
+            if s > 1:
+                seasons = [x for x in tmdb_data.get("seasons", []) if 0 < x.get("season_number", 0) < s]
+                if not seasons:
+                    return {"sources": [], "error": "DDizi mutlak bölüm no hesaplanamadı"}
+                target = sum(x.get("episode_count", 0) for x in seasons) + e
+            target = (0, target)
+        else:
+            target = (s, e)
+
         ep_url = None
-        ep_matches = re.findall(r'href=[\'"]([^\'"]+)[\'"]', show_html)
-        for href in ep_matches:
-            if f"-{s}-sezon-{e}-bolum" in href or (f"{s}-sezon" in href and f"{e}-bolum" in href):
-                ep_url = href
+        lo, hi, cache_pages = 0, last_page, {0: first_eps}
+        for _ in range(8):
+            if lo > hi:
                 break
-
+            mid = (lo + hi) // 2
+            eps = cache_pages.get(mid)
+            if eps is None:
+                eps = page_eps(mid)[1]
+                cache_pages[mid] = eps
+            if not eps:
+                break
+            hit = next((h for k, h in eps if k == target), None)
+            if hit:
+                ep_url = hit
+                break
+            keys = [k for k, _ in eps]
+            if target > max(keys):
+                hi = mid - 1
+            elif target < min(keys):
+                lo = mid + 1
+            else:
+                break
         if not ep_url:
-            slug = show_url.rstrip("/").split("/")[-1]
-            ep_url = f"{DDIZI_BASE}/{slug}-{s}-sezon-{e}-bolum/"
+            return {"sources": [], "error": "DDizi bölüm bulunamadı"}
 
-        # 4. Bölüm sayfasından iframe src çıkar
-        ep_resp = session.get(
-            ep_url,
-            headers={**headers, "Referer": show_url},
-            timeout=15,
-        )
+        # 4. Bölüm sayfası → /player/oynat/{hash} → jwplayer sources (çoğunlukla Yandex Disk MP4)
+        ep_resp = session.get(ep_url, headers={**headers, "Referer": show_url}, timeout=12)
         if not ep_resp.ok:
             return {"sources": [], "error": f"DDizi bölüm sayfası HTTP {ep_resp.status_code}"}
         ep_html = ep_resp.text
+        if re.search(r"kaldirilmistir|telif", ep_html, re.IGNORECASE) and "player/oynat" not in ep_html:
+            return {"sources": [], "error": "DDizi bölüm telif nedeniyle kaldırılmış"}
+        m = re.search(r'<iframe[^>]+src=[\'"]([^\'"]*player/[^\'"]+)[\'"]', ep_html, re.IGNORECASE) \
+            or re.search(r'og:video"\s+content="([^"]+)"', ep_html)
+        if not m:
+            return {"sources": [], "error": "DDizi oynatıcı bulunamadı"}
+        iframe_src = urllib.parse.urljoin(DDIZI_BASE + "/", m.group(1))
+        desc = (re.search(r'name="DESCRIPTION"\s+CONTENT="([^"]*)"', ep_html, re.IGNORECASE) or [None, ""])[1]
+        # Yerli dizi zaten Türkçe sesli; yabancılarda açıklamada "Dublaj" geçiyorsa Türkçe dublaj
+        lang = "tr-dub" if yerli or re.search(r"dublaj", desc, re.IGNORECASE) else "tr"
 
-        ep_soup = BeautifulSoup(ep_html, "html.parser")
-        iframe = ep_soup.find("iframe", src=True) or ep_soup.find("iframe", attrs={"data-src": True})
-        iframe_src = None
-        if iframe:
-            iframe_src = iframe.get("src") or iframe.get("data-src")
-        if not iframe_src:
-            m = re.search(r'<iframe[^>]+(?:src|data-src)=[\'"]([^\'"]+)[\'"]', ep_html, re.IGNORECASE)
-            if m:
-                iframe_src = m.group(1)
-
-        if not iframe_src:
-            return {"sources": [], "error": "DDizi iframe bulunamadı"}
-
-        if iframe_src.startswith("//"):
-            iframe_src = "https:" + iframe_src
-        elif not iframe_src.startswith("http"):
-            iframe_src = DDIZI_BASE + "/" + iframe_src.lstrip("/")
-
-        # Fast/Ciner CDN ise direkt döndür
-        if re.search(r"fast\.cdn|ciner\.cdn|cloudtv|cdntr", iframe_src, re.IGNORECASE):
-            result = {"sources": [{"url": iframe_src, "quality": "1080p", "name": "DDizi", "type": "hls"}]}
-            cache[cache_key] = result
-            return result
-
-        # 5. iframe'i çek, m3u8 bul
-        iframe_resp = session.get(
-            iframe_src,
-            headers={"User-Agent": DDIZI_UA, "Referer": ep_url},
-            timeout=15,
-        )
-        if not iframe_resp.ok:
-            return {"sources": [], "error": f"DDizi iframe HTTP {iframe_resp.status_code}"}
-        iframe_html = iframe_resp.text
-
-        m3u8_match = (
-            re.search(r'file\s*:\s*[\'\"](https?://[^\'"]+\.m3u8[^\'"]*)[\'"]', iframe_html, re.IGNORECASE)
-            or re.search(r'[\'"](https?://[^\'"]+\.m3u8[^\'"]*)[\'"]', iframe_html, re.IGNORECASE)
-            or re.search(r'source\s+src=[\'\"](https?://[^\'"]+)[\'"]', iframe_html, re.IGNORECASE)
-        )
-        if not m3u8_match:
-            return {"sources": [], "error": "DDizi m3u8 bulunamadı"}
-
-        url = m3u8_match.group(1).strip()
-        result = {
-            "sources": [{
-                "url": url,
-                "quality": "1080p",
-                "name": "DDizi",
-                "type": "hls" if ".m3u8" in url.lower() else "mp4",
-            }]
-        }
+        pl = session.get(iframe_src, headers={"User-Agent": DDIZI_UA, "Referer": ep_url}, timeout=12)
+        if not pl.ok:
+            return {"sources": [], "error": f"DDizi oynatıcı HTTP {pl.status_code}"}
+        files = re.findall(r'file\s*:\s*[\'"](https?://[^\'"]+)[\'"]\s*,\s*label\s*:\s*[\'"]([^\'"]*)[\'"]', pl.text) \
+            or [(u, "Auto") for u in re.findall(r'[\'"](https?://[^\'"]+\.m3u8[^\'"]*)[\'"]', pl.text)]
+        sources = []
+        for url, label in files:
+            if re.search(r"\.(vtt|srt|jpg|png)(\?|$)", url, re.IGNORECASE):
+                continue
+            hls = ".m3u8" in url.lower()
+            name = "DDizi (TR Dublaj)" if lang == "tr-dub" and not yerli else "DDizi (Türkçe)" if yerli else "DDizi (TR Altyazı)"
+            sources.append({"url": url, "quality": label if re.search(r"\d{3,4}p", label) else "1080p", "name": name, "type": "hls" if hls else "mp4", "lang": lang})
+        if not sources:
+            return {"sources": [], "error": "DDizi video bulunamadı"}
+        result = {"sources": sources[:3]}
+        # Yandex bağlantıları süreli → kısa önbellek
         cache[cache_key] = result
         return result
 

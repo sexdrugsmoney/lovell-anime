@@ -346,7 +346,7 @@ async function api(url, env) {
         extra: [
           ...(kind === 'movie' ? [{id: 'closeload', run: async () => normalizeSources(await fetchCloseLoad(id, env), 'closeload')}] : []),
           // Türkçe dublaj (JetFilm, SelcukFlix): Worker'dan erişilir, akışlar imzalı HLS geçidinden oynar
-          ...(hint?.imdb ? [{id: 'dublaj', run: () => fetchDubSources({kind, id, imdb: hint.imdb, titles: [info.original, info.title], season, episode, origin: url.origin, secret: proxySecret(env)})}] : []),
+          ...(hint?.imdb ? [{id: 'dublaj', run: () => fetchDubSources({kind, id, imdb: hint.imdb, titles: [info.original, info.title], year: info.year, season, episode, origin: url.origin, secret: proxySecret(env)})}] : []),
         ],
       });
       out.sources = [...(out.sources || []), ...remote.sources];
