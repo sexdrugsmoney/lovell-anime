@@ -40,7 +40,7 @@ app.use((req, res, next) => {
 
 // ---- Health ----
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam', 'diziyou'] });
+  res.json({ status: 'ok', service: 'anthology-scraper', scrapers: ['animecix', 'anizium', 'sonanime', 'hdfilmcehennemi', 'sinewix', 'dizimom', 'closeload', 'webteizle', 'lovefilmizle', 'filmizlebabam', 'ddizi', 'diziwatch', 'diziyou'] });
 });
 
 // ---- TMDB helpers ----
@@ -679,119 +679,224 @@ const DIZIYOU_STORAGE = 'https://storage.diziyou.one';
 const DIZIYOU_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36';
 
 app.get('/api/diziyou', async (req, res) => {
+  res.json({ sources: [], error: 'DiziYou: site JS render gerektiriyor ve storage API\'si kapalı — bu kaynak devre dışı' });
+});
+// ---- DDizi ----
+const DDIZI_BASE = 'https://www.ddizi.im';
+const DDIZI_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36';
+
+app.get('/api/ddizi', async (req, res) => {
   const { tmdbId, season = '1', episode = '1' } = req.query;
   if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
-  const cacheKey = `diziyou:${tmdbId}:${season}:${episode}`;
+  const cacheKey = `ddizi:${tmdbId}:${season}:${episode}`;
   const hit = cache.get(cacheKey);
   if (hit) return res.json(hit);
 
   try {
-    // 1. TMDB'den başlık al
+    // 1. TMDB başlık
     const tmdb = await tmdbTv(tmdbId);
     const trTitle = tmdb.name || '';
     const origTitle = tmdb.original_name || '';
+    if (!trTitle && !origTitle) throw new Error('TMDB başlık bulunamadı');
 
     const headers = {
-      'User-Agent': DIZIYOU_UA,
-      'Referer': DIZIYOU_BASE + '/',
-      'Accept': 'text/html,application/xhtml+xml',
+      'User-Agent': DDIZI_UA,
+      'Referer': DDIZI_BASE + '/',
     };
 
-    // 2. Arama — TR başlık önce, sonra orijinal
-    let foundLink = null;
+    // 2. Arama
+    let showUrl = null;
     for (const q of [trTitle, origTitle].filter(Boolean)) {
-      const searchRes = await fetch(`${DIZIYOU_BASE}/?s=${encodeURIComponent(q)}`, {
-        signal: AbortSignal.timeout(10000), headers,
+      const searchRes = await fetch(`${DDIZI_BASE}/?s=${encodeURIComponent(q)}`, {
+        signal: AbortSignal.timeout(10000),
+        headers,
       });
       if (!searchRes.ok) continue;
       const html = await searchRes.text();
       const $ = cheerio.load(html);
-
       const qLow = q.toLowerCase().trim();
       let found = null;
-      $('.list-series a, .post-title a, #categorytitle a, .entry-title a').each((_, el) => {
+      $('.search-result a, .entry-title a, h2 a').each((_, el) => {
         const text = $(el).text().toLowerCase().replace('izle', '').trim();
         const href = $(el).attr('href');
-        if (!href || href.includes('/kategori/')) return;
-        if (text === qLow || text.startsWith(qLow + ' ') || text.startsWith(qLow + ' (')) {
+        if (!href) return;
+        if (text === qLow || text.startsWith(qLow + ' ') || text.includes(qLow)) {
           found = href; return false;
         }
       });
-      // fallback: ilk sonuç
       if (!found) {
-        const first = $('.list-series a, .post-title a, .entry-title a').first().attr('href');
-        if (first && !first.includes('/kategori/')) found = first;
+        const first = $('.search-result a, .entry-title a, h2 a').first().attr('href');
+        if (first) found = first;
       }
-      if (found) { foundLink = found; break; }
+      if (found) { showUrl = found; break; }
     }
 
-    if (!foundLink) throw new Error('DiziYou dizi bulunamadı');
+    if (!showUrl) throw new Error('DDizi dizi bulunamadı');
 
-    // 3. Dizi sayfasına git ve bölüm linkini bul
-    const showRes = await fetch(foundLink, { signal: AbortSignal.timeout(10000), headers });
+    // 3. Dizi sayfasından bölüm linki bul
+    const showRes = await fetch(showUrl, { signal: AbortSignal.timeout(10000), headers });
+    if (!showRes.ok) throw new Error(`DDizi dizi sayfası HTTP ${showRes.status}`);
+    const showHtml = await showRes.text();
+    const $show = cheerio.load(showHtml);
+
+    const s = parseInt(season, 10);
+    const e = parseInt(episode, 10);
     let epUrl = null;
-    if (showRes.ok) {
-      const showHtml = await showRes.text();
-      const $show = cheerio.load(showHtml);
-      // Sezon/bölüm linklerini ara
-      $show('a[href*="-sezon-"][href*="-bolum"]').each((_, el) => {
-        const href = $show(el).attr('href') || '';
-        const s = String(season), e = String(episode);
-        if (href.includes(`-${s}-sezon-${e}-bolum`) || href.includes(`-sezon-${s}-bolum-${e}`)) {
-          epUrl = href; return false;
-        }
-      });
-      // Fallback: slug + season/episode pattern
-      if (!epUrl) {
-        const slug = foundLink.split('/').filter(Boolean).pop();
-        // Önce doğrudan dizi adı slug'ını dene
-        const slugBase = slug.replace(/\d+$/, ''); // reacher2 → reacher
-        epUrl = `${DIZIYOU_BASE}/${slugBase}-${season}-sezon-${episode}-bolum/`;
+
+    // Pattern: {slug}-{s}-sezon-{e}-bolum
+    $show('a[href]').each((_, el) => {
+      const href = $show(el).attr('href') || '';
+      if (href.includes(`-${s}-sezon-${e}-bolum`) || (href.includes(`${s}-sezon`) && href.includes(`${e}-bolum`))) {
+        epUrl = href; return false;
       }
-    } else {
-      const slug = foundLink.split('/').filter(Boolean).pop().replace(/\d+$/, '');
-      epUrl = `${DIZIYOU_BASE}/${slug}-${season}-sezon-${episode}-bolum/`;
-    }
-    const epRes = await fetch(epUrl, { signal: AbortSignal.timeout(10000), headers });
-    if (!epRes.ok) throw new Error(`DiziYou bölüm sayfası HTTP ${epRes.status}`);
-    const epHtml = await epRes.text();
-
-    // 4. #diziyouPlayer src'den itemId çıkar
-    const $ = cheerio.load(epHtml);
-    const playerSrc = $('#diziyouPlayer').attr('src') || '';
-    if (!playerSrc) throw new Error('DiziYou player bulunamadı');
-
-    const itemId = playerSrc.split('/').pop().replace('.html', '').split('?')[0];
-    const dyHeaders = { Referer: DIZIYOU_BASE + '/' };
-    const sources = [];
-
-    // 5. Türkçe Altyazı
-    sources.push({
-      url: `${DIZIYOU_STORAGE}/episodes/${itemId}/play.m3u8`,
-      quality: '1080p',
-      name: 'DiziYou (TR Altyazı)',
-      type: 'hls',
-      lang: 'tr-sub',
     });
 
-    // 6. Türkçe Dublaj (varsa _tr suffix)
-    if (epHtml.includes('turkceDublaj') || epHtml.includes('Türkçe Dublaj')) {
-      sources.push({
-        url: `${DIZIYOU_STORAGE}/episodes/${itemId}_tr/play.m3u8`,
-        quality: '1080p',
-        name: 'DiziYou (TR Dublaj)',
-        type: 'hls',
-        lang: 'tr-dub',
-      });
+    if (!epUrl) {
+      // Slug'dan tahmin et
+      const slug = showUrl.split('/').filter(Boolean).pop();
+      epUrl = `${DDIZI_BASE}/${slug}-${s}-sezon-${e}-bolum/`;
     }
 
-    const result = { sources };
+    // 4. Bölüm sayfasından iframe src çıkar
+    const epRes = await fetch(epUrl, { signal: AbortSignal.timeout(10000), headers: { ...headers, Referer: showUrl } });
+    if (!epRes.ok) throw new Error(`DDizi bölüm sayfası HTTP ${epRes.status}`);
+    const epHtml = await epRes.text();
+    const $ep = cheerio.load(epHtml);
+
+    let iframeSrc = $ep('iframe[src]').first().attr('src');
+    if (!iframeSrc) {
+      // data-src fallback
+      iframeSrc = $ep('iframe[data-src]').first().attr('data-src');
+    }
+    if (!iframeSrc) throw new Error('DDizi iframe bulunamadı');
+
+    // Relative URL fix
+    if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
+    if (!iframeSrc.startsWith('http')) iframeSrc = DDIZI_BASE + '/' + iframeSrc.replace(/^\//, '');
+
+    // 5. iframe Fast/Ciner CDN ise direkt döndür, yoksa m3u8 arama
+    if (/fast\.cdn|ciner\.cdn|cloudtv|cdntr/i.test(iframeSrc)) {
+      const result = { sources: [{ url: iframeSrc, quality: '1080p', name: 'DDizi', type: 'hls' }] };
+      cache.set(cacheKey, result);
+      return res.json(result);
+    }
+
+    const iframeRes = await fetch(iframeSrc, {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': DDIZI_UA, 'Referer': epUrl },
+    });
+    if (!iframeRes.ok) throw new Error(`DDizi iframe HTTP ${iframeRes.status}`);
+    const iframeHtml = await iframeRes.text();
+
+    const m3u8Match = iframeHtml.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i)
+      || iframeHtml.match(/file\s*:\s*["'](https?:\/\/[^"']+)["']/i)
+      || iframeHtml.match(/source\s+src=["'](https?:\/\/[^"']+)["']/i);
+
+    if (!m3u8Match) throw new Error('DDizi m3u8 bulunamadı');
+
+    const result = { sources: [{ url: m3u8Match[1], quality: '1080p', name: 'DDizi', type: /\.m3u8/i.test(m3u8Match[1]) ? 'hls' : 'mp4' }] };
     cache.set(cacheKey, result);
     res.json(result);
   } catch (e) {
     res.json({ sources: [], error: e.message });
   }
 });
+
+// ---- DiziWatch ----
+const DIZIWATCH_BASE = 'https://diziwatch.ac';
+const DIZIWATCH_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36';
+
+app.get('/api/diziwatch', async (req, res) => {
+  const { tmdbId, season = '1', episode = '1' } = req.query;
+  if (!tmdbId) return res.json({ sources: [], error: 'tmdbId gerekli' });
+  const cacheKey = `diziwatch:${tmdbId}:${season}:${episode}`;
+  const hit = cache.get(cacheKey);
+  if (hit) return res.json(hit);
+
+  try {
+    // 1. TMDB başlık + external IDs
+    const tmdb = await tmdbTvWithExternal(tmdbId);
+    const trTitle = tmdb.name || '';
+    const origTitle = tmdb.original_name || '';
+    const imdbId = tmdb.external_ids?.imdb_id || '';
+    if (!trTitle && !origTitle) throw new Error('TMDB başlık bulunamadı');
+
+    const headers = {
+      'User-Agent': DIZIWATCH_UA,
+      'Referer': DIZIWATCH_BASE + '/',
+    };
+
+    // 2. DiziWatch arama
+    const searchTitle = trTitle || origTitle;
+    const searchRes = await fetch(`${DIZIWATCH_BASE}/bg/searchcontent`, {
+      method: 'POST',
+      signal: AbortSignal.timeout(10000),
+      headers: {
+        ...headers,
+        'Content-Type': 'application/x-www-form-urlencoded',
+        'X-Requested-With': 'XMLHttpRequest',
+      },
+      body: new URLSearchParams({ searchterm: searchTitle }).toString(),
+    });
+    if (!searchRes.ok) throw new Error(`DiziWatch arama HTTP ${searchRes.status}`);
+    const searchData = await searchRes.json().catch(() => ({}));
+    const results = searchData?.data?.result || [];
+
+    if (!Array.isArray(results) || results.length === 0) throw new Error('DiziWatch sonuç bulunamadı');
+
+    // 3. IMDB ID veya başlık ile eşleştir
+    let match = null;
+    if (imdbId) {
+      match = results.find(r => r.object_related_imdb_id === imdbId);
+    }
+    if (!match) {
+      const qLow = searchTitle.toLowerCase().trim();
+      match = results.find(r => (r.object_name || '').toLowerCase().includes(qLow))
+        || results[0];
+    }
+    if (!match) throw new Error('DiziWatch eşleşme bulunamadı');
+
+    const slug = match.used_slug;
+    if (!slug) throw new Error('DiziWatch slug bulunamadı');
+
+    // 4. Bölüm URL
+    const s = parseInt(season, 10);
+    const e = parseInt(episode, 10);
+    const epUrl = `${DIZIWATCH_BASE}/dizi/${slug}/sezon-${s}/bolum-${e}`;
+
+    // 5. Bölüm sayfasından iframe çıkar
+    const epRes = await fetch(epUrl, {
+      signal: AbortSignal.timeout(10000),
+      headers,
+    });
+    if (!epRes.ok) throw new Error(`DiziWatch bölüm sayfası HTTP ${epRes.status}`);
+    const epHtml = await epRes.text();
+    const $ep = cheerio.load(epHtml);
+
+    let iframeSrc = $ep('#cstk iframe, iframe').first().attr('src') || $ep('iframe').first().attr('data-src');
+    if (!iframeSrc) throw new Error('DiziWatch iframe bulunamadı');
+    if (iframeSrc.startsWith('//')) iframeSrc = 'https:' + iframeSrc;
+
+    // 6. Pichive player → m3u8
+    const playerRes = await fetch(iframeSrc, {
+      signal: AbortSignal.timeout(10000),
+      headers: { 'User-Agent': DIZIWATCH_UA, 'Referer': epUrl },
+    });
+    if (!playerRes.ok) throw new Error(`DiziWatch player HTTP ${playerRes.status}`);
+    const playerHtml = await playerRes.text();
+
+    const m3u8Match = playerHtml.match(/file\s*:\s*["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i)
+      || playerHtml.match(/["'](https?:\/\/[^"']+\.m3u8[^"']*)["']/i);
+    if (!m3u8Match) throw new Error('DiziWatch m3u8 bulunamadı');
+
+    const result = { sources: [{ url: m3u8Match[1], quality: '1080p', name: 'DiziWatch', type: 'hls' }] };
+    cache.set(cacheKey, result);
+    res.json(result);
+  } catch (e) {
+    res.json({ sources: [], error: e.message });
+  }
+});
+
 // Akış: GET closeload.filmmakinesi.to/video/embed/{id}/tmdb-id={tmdbId}
 // → HTML → packed JS unpack → Base64 double decode → m3u8
 function getAndUnpack(packed) {
@@ -1430,7 +1535,8 @@ app.get('/api/all', async (req, res) => {
       fetchSource(`${base}/api/lovefilmizle?${params}&type=tv`),
       fetchSource(`${base}/api/filmmakinesi?tmdbId=${encodeURIComponent(tmdbId)}&type=tv&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
       fetchSource(`${base}/api/filmizlebabam?${params}&type=tv`),
-      fetchSource(`${base}/api/diziyou?tmdbId=${encodeURIComponent(tmdbId)}&season=${encodeURIComponent(season)}&episode=${encodeURIComponent(episode)}`),
+      fetchSource(`${base}/api/ddizi?${params}`),
+      fetchSource(`${base}/api/diziwatch?${params}`),
     ]);
     allSources = results.flat();
   } else {
