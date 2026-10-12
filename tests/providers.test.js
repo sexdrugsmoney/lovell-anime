@@ -98,6 +98,17 @@ test('uzak kaynaklar: AniList kimlikli başlıklar TMDB servislerine gönderilme
   assert.match(tv.report[0].error, /HTTP 500/);
 });
 
+test('Türkçe dublaj tek biçimde işaretlenir ve en öne alınır', async () => {
+  globalThis.fetch = async () => jsonRes({sources: [
+    {url: 'https://cdn.example/sub.m3u8', name: 'DiziYou · Altyazılı', lang: 'tr'},
+    {url: 'https://cdn.example/dub1.m3u8', name: 'SineWix (TR Dublaj)', lang: 'tr-dub'},
+    {url: 'https://cdn.example/dub2.m3u8', name: 'DiziYou · Türkçe Dublaj', lang: 'tr'},
+  ]});
+  const r = await fetchRemoteSources({kind: 'tv', id: 1}, {anthologyUrl: 'https://ant.example'});
+  assert.deepEqual(r.sources.map(s => [s.name, s.lang, !!s.dub]), [
+    ['SineWix (TR Dublaj)', 'tr', true], ['DiziYou · Türkçe Dublaj', 'tr', true], ['DiziYou · Altyazılı', 'tr', false]]);
+});
+
 test('geçersiz ya da boş adresler yok sayılır', async () => {
   globalThis.fetch = async () => { throw Error('çağrılmamalı'); };
   const r = await fetchRemoteSources({kind: 'tv', id: 1}, {anthologyUrl: '\n', vidrockUrl: 'http://insecure.example', cineproUrl: ''});

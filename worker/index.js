@@ -3,7 +3,8 @@
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
 import {configure, browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
-import {buildEmbeds, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs} from '../lib/providers.js';
+import {buildEmbeds, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs, fetchDubSources} from '../lib/providers.js';
+import {handleHlsProxy, isHlsProxyPath} from '../lib/hls-proxy.js';
 import trArchiveIndex from '../src/data/tr-archive-index.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
@@ -342,7 +343,11 @@ async function api(url, env) {
         cineproUrl: env.CINEPRO_URL,
         deadline: /^\d{4,5}$/.test(q.get('budget') || '') ? Math.min(20000, Math.max(2500, Number(q.get('budget')))) : 14000,
         // CloseLoad yalnızca filmlerde; Worker içinde çalışır
-        extra: kind === 'movie' ? [{id: 'closeload', run: async () => normalizeSources(await fetchCloseLoad(id, env), 'closeload')}] : [],
+        extra: [
+          ...(kind === 'movie' ? [{id: 'closeload', run: async () => normalizeSources(await fetchCloseLoad(id, env), 'closeload')}] : []),
+          // Türkçe dublaj (JetFilm, SelcukFlix): Worker'dan erişilir, akışlar imzalı HLS geçidinden oynar
+          ...(hint?.imdb ? [{id: 'dublaj', run: () => fetchDubSources({kind, id, imdb: hint.imdb, titles: [info.original, info.title], season, episode, origin: url.origin, secret: proxySecret(env)})}] : []),
+        ],
       });
       out.sources = [...(out.sources || []), ...remote.sources];
       out.report = remote.report;
@@ -357,10 +362,15 @@ async function api(url, env) {
   return json({error: 'Bilinmeyen uç nokta'}, 404);
 }
 
+// Geçit imza anahtarı: PROXY_SECRET yoksa mevcut gizli değerden türetilir (her dağıtımda aynı kalır)
+const proxySecret = env => env.PROXY_SECRET || (env.TMDB_READ_TOKEN ? `lovell-hls:${env.TMDB_READ_TOKEN}` : '');
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
     if (!['GET', 'HEAD'].includes(request.method)) return json({error: 'Desteklenmeyen istek'}, 405);
+    // Referer isteyen dublaj akışları için imzalı geçit (yalnızca bu sitenin ürettiği adresler)
+    if (isHlsProxyPath(url.pathname)) return handleHlsProxy(proxySecret(env), url.pathname, request.headers.get('range'));
     if (url.pathname.startsWith('/api/')) {
       try {
         return await api(url, env);

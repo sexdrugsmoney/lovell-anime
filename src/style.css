@@ -1567,6 +1567,7 @@ main { overflow-x: clip; }
 .src-bar .source-list { flex: 0 1 auto; }
 .src-bar .source-label + .source-list { margin-right: 10px; }
 .source-chip.is-tr::after { content: "TR"; margin-left: 6px; padding: 0 4px; border-radius: 3px; background: rgba(255,255,255,.14); font-size: 9px; font-weight: 800; letter-spacing: .06em; }
+.source-chip.is-dub::after { content: "TR DUBLAJ"; background: var(--red); color: var(--red-ink); }
 .source-chip.on.is-tr::after { background: rgba(0,0,0,.25); }
 .src-status { display: inline-flex; align-items: center; gap: 8px; color: #8d92ad; font-size: 12px; font-weight: 600; margin-left: auto; }
 .src-status .spin { width: 13px; height: 13px; border-width: 2px; }

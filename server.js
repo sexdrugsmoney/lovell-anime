@@ -6,7 +6,9 @@ import {fileURLToPath} from 'node:url';
 import {ROOT} from './lib/env.js';
 import {tmdbGet, netStatus} from './lib/net.js';
 import {browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from './lib/catalog.js';
-import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs} from './lib/media.js';
+import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs, PROXY_SECRET} from './lib/media.js';
+import {Readable} from 'node:stream';
+import {handleHlsProxy, isHlsProxyPath} from './lib/hls-proxy.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -134,6 +136,13 @@ export const server = http.createServer(async (req, res) => {
   const q = u.searchParams;
   try {
     // ---- API ----
+    // Referer isteyen dublaj akışları için imzalı geçit
+    if (isHlsProxyPath(u.pathname)) {
+      const r = await handleHlsProxy(PROXY_SECRET, u.pathname, req.headers.range);
+      res.writeHead(r.status, Object.fromEntries(r.headers));
+      if (!r.body || req.method === 'HEAD') return res.end();
+      return Readable.fromWeb(r.body).on('error', () => res.destroy()).pipe(res);
+    }
     if (u.pathname === '/api/status') return json(res, 200, {...netStatus(), dataErrors, mediaDir: MEDIA_DIR(), library: library().length, subs: !!process.env.WYZIE_API_KEY});
     if (u.pathname === '/api/genres') return json(res, 200, genresFor(q.get('section')), 86400);
     if (u.pathname === '/api/home') return json(res, 200, await home(q.get('section')), 300);
@@ -167,7 +176,7 @@ export const server = http.createServer(async (req, res) => {
         const hint = info ? {title: info.title, original: info.original, year: info.year, imdb: info.imdb} : null;
         // ?budget=ms: istemci önce kısa bütçeyle (hızlı Türkçe kaynaklar), sonra tam bütçeyle sorar
         const budget = /^\d{4,5}$/.test(q.get('budget') || '') ? Math.min(20000, Math.max(2500, Number(q.get('budget')))) : 14000;
-        const remote = await remoteSources({kind, id, alId, season, episode, hint}, budget);
+        const remote = await remoteSources({kind, id, alId, season, episode, hint}, budget, `http://${req.headers.host || 'localhost'}`);
         out.sources = [...(out.sources || []), ...remote.sources];
         out.report = remote.report;
         out.timedOut = remote.timedOut;

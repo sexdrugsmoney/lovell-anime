@@ -863,6 +863,11 @@ function animeIds(a, s, e) {
   }
   return null;
 }
+// Türkçe kaynak seçimi: dublaj tercihi açıksa önce Türkçe dublaj, sonra diğer Türkçe kaynaklar.
+function trIndex(list) {
+  const dub = store.get('preferDub', true) ? list.findIndex(x => x.dub) : -1;
+  return dub >= 0 ? dub : list.findIndex(x => x.lang === 'tr');
+}
 const playPath = (ctx, phase) => { const ids = animeIds(ctx.a, ctx.s, ctx.e); return `/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${ids?.al ? `&alId=${ids.al}` : ''}${ids?.mal ? `&malId=${ids.mal}` : ''}${ids?.ep && ids.ep !== ctx.e ? `&aep=${ids.ep}` : ''}&phase=${phase}`; };
 async function loadSources(ctx) {
   $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar hazırlanıyor…</div>`;
@@ -890,7 +895,7 @@ async function loadSources(ctx) {
   }
   const mem = srcMemory.get(ctx.a);
   const memIdx = mem?.kind === 'source' ? ctx.sources.findIndex(x => x.name === mem.name) : -1;
-  const tr = store.get('preferTr', true) ? ctx.sources.findIndex(x => x.lang === 'tr') : -1;
+  const tr = store.get('preferTr', true) ? trIndex(ctx.sources) : -1;
   if (memIdx >= 0) mountPlayer(ctx, memIdx);
   else if (tr >= 0) mountPlayer(ctx, tr);
   else if (ctx.embeds.length) mountEmbed(ctx, preferredEmbed(ctx));
@@ -907,16 +912,23 @@ async function fetchRemote(ctx, budget = 0) {
   const fresh = (d.sources || []).filter(x => !known.has(x.url) && !known.has(sig(x)) && known.add(sig(x)));
   const firstFresh = ctx.sources.length;
   ctx.sources = [...(ctx.sources || []), ...fresh];
+  // Yeni gelenler arasında Türkçe dublaj varsa bildirim onu açar.
+  const dubAt = fresh.findIndex(x => x.dub);
+  const announce = () => {
+    if (!fresh.length) return;
+    const at = dubAt >= 0 ? firstFresh + dubAt : firstFresh;
+    toast(dubAt >= 0 ? 'Türkçe dublaj bulundu' : `${fresh.length} doğrudan kaynak bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountPlayer(ctx, at); }});
+  };
   // Kısa sorgu yalnızca eldekini ekler; arama durumunu tam sorgu kapatır.
   if (budget) {
     if (fresh.length && ctx.mode) refreshSrcBar(ctx);
-    if (fresh.length && ctx.mode === 'embed') toast(`${fresh.length} doğrudan kaynak bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountPlayer(ctx, firstFresh); }});
+    if (ctx.mode === 'embed') announce();
     return;
   }
   ctx.remote = ctx.sources.some(x => x.origin !== 'local' && x.origin !== 'manifest') ? 'done' : 'none';
   if (ctx.mode === 'embed') {
     refreshSrcBar(ctx);
-    if (fresh.length) toast(`${fresh.length} doğrudan kaynak bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountPlayer(ctx, firstFresh); }});
+    announce();
   } else if (!ctx.mode && !ctx.deciding) {
     // Hiç embed yoktu: bulunanı aç, yoksa boş durumu göster
     if (ctx.sources.length) mountPlayer(ctx, 0); else emptyStage(ctx);
@@ -977,7 +989,7 @@ function srcBarHtml(ctx, mode, index) {
   const status = ctx.remote === 'loading' ? '<span class="src-status" role="status"><span class="spin"></span>Doğrudan kaynaklar aranıyor…</span>' : '';
   const own = direct.length && direct.every(x => x.origin === 'local' || x.origin === 'manifest');
   const trList = embeds.map((e, i) => [e, i]).filter(([e]) => e.tr), genList = embeds.map((e, i) => [e, i]).filter(([e]) => !e.tr);
-  return `${direct.length ? `<span class="source-label">${own ? 'Dosya' : 'Doğrudan'}</span><div class="source-list">${direct.map((x, i) => chip(`${mode === 'player' && i === index ? 'on' : ''} ${x.lang === 'tr' ? 'is-tr' : ''}`, `data-source="${i}"`, x.name)).join('')}</div>` : ''}
+  return `${direct.length ? `<span class="source-label">${own ? 'Dosya' : 'Doğrudan'}</span><div class="source-list">${direct.map((x, i) => chip(`${mode === 'player' && i === index ? 'on' : ''} ${x.lang === 'tr' ? 'is-tr' : ''} ${x.dub ? 'is-dub' : ''}`, `data-source="${i}"`, x.dub && !/dublaj/i.test(x.name) ? `${x.name} · Dublaj` : x.name)).join('')}</div>` : ''}
     ${trList.length ? `<span class="source-label">Türkçe fansub</span><div class="source-list">${trList.map(([e, i]) => chip(`${mode === 'embed' && i === index ? 'on' : ''} is-tr`, `data-embed="${i}"`, e.name)).join('')}</div>` : ''}
     ${genList.length ? `<span class="source-label">Embed</span><div class="source-list">${genList.map(([e, i], k) => (k < EMBED_SHOWN || ctx.moreEmbeds || (mode === 'embed' && i === index)) ? chip(`${mode === 'embed' && i === index ? 'on' : ''} ${e.backup ? 'is-backup' : ''}`, `data-embed="${i}"`, e.name) : '').join('')}${genList.length > EMBED_SHOWN ? `<button class="source-chip source-chip-dim" type="button" data-more-embeds>${ctx.moreEmbeds ? 'Daha az' : `Daha fazla (+${genList.length - EMBED_SHOWN})`}</button>` : ''}${!CLOUD && mode === 'embed' ? '<button class="source-chip source-chip-dim" type="button" id="add-local-hint" title="Kendi dosyanı ekle">+ Dosyam</button>' : ''}</div>` : ''}
     ${status}`;
@@ -2302,6 +2314,7 @@ const PREFS = [
   ['resume', 'Kaldığım yerden devam et', 'Bir videoyu yeniden açtığında son izlediğin saniyeden başlar.'],
   ['autoSkip', 'Anime giriş ve bitişini otomatik atla', 'AniSkip verisi olan bölümlerde açılış / kapanış şarkısını kendiliğinden geçer (doğrudan kaynaklarda).', false],
   ['preferTr', 'Türkçe kaynakları önce aç', 'Türkçe altyazılı ya da dublajlı doğrudan kaynak bulunursa oynatma onunla başlar.'],
+  ['preferDub', 'Türkçe dublajı altyazıya tercih et', 'Hem dublaj hem altyazılı Türkçe kaynak varsa dublajlı olan açılır.'],
 ];
 const THEMES = [['system', 'Sistem'], ['dark', 'Koyu'], ['light', 'Açık']];
 function openSettings() {
