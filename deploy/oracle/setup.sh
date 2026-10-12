@@ -22,6 +22,16 @@ log() { printf '\n\033[1;35m==> %s\033[0m\n' "$*"; }
 [ "$(id -u)" = 0 ] || { echo "Bu betiği sudo ile çalıştır."; exit 1; }
 export DEBIAN_FRONTEND=noninteractive
 
+log "Takas alanı (düşük bellekli sunucular için)"
+# E2.1.Micro gibi 1 GB'lık sunucularda npm/pip kurulumu belleği doldurabilir; 2 GB takas alanı aç.
+mem_mb=$(awk '/MemTotal/{print int($2/1024)}' /proc/meminfo)
+if [ "$mem_mb" -lt 3000 ] && ! swapon --show | grep -q '/swapfile'; then
+  fallocate -l 2G /swapfile 2>/dev/null || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile && mkswap /swapfile >/dev/null && swapon /swapfile
+  grep -q '^/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  echo "  2 GB takas alanı açıldı (bellek: ${mem_mb} MB)"
+fi
+
 log "Sistem paketleri"
 apt-get update -y
 apt-get install -y curl git ca-certificates gnupg python3-venv python3-pip build-essential \
