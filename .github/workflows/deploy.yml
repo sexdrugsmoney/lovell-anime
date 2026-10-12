@@ -3,21 +3,33 @@ name: Deploy to Cloudflare Workers
 on:
   push:
     branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-workers
+  cancel-in-progress: false
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
     name: Deploy
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+      WRANGLER: npx --yes wrangler@4
     steps:
       - uses: actions/checkout@v4
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install dependencies
         run: npm install --ignore-scripts
+
+      - name: Test
+        run: node --test
 
       - name: Prepare dist/
         run: |
@@ -30,26 +42,40 @@ jobs:
               fs.mkdirSync(path.dirname(to), {recursive:true});
               fs.cpSync(rel, to, {recursive:true});
             });
-            console.log('dist/ hazirlanadi');
+            console.log('dist/ hazirlandi');
           "
 
+      # Cloudflare API'si zaman zaman 5xx döndürüyor; geçici hatada 3 kez dene.
       - name: Deploy via Wrangler
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CF_API_TOKEN }}
-          accountId: ${{ secrets.CF_ACCOUNT_ID }}
-          command: deploy
+        run: |
+          for i in 1 2 3; do
+            $WRANGLER deploy && exit 0
+            echo "Deneme $i başarısız, 20 sn sonra yeniden denenecek"; sleep 20
+          done
+          exit 1
 
+      # Yalnızca dolu olan secret'lar tek seferde yüklenir (boş değer Worker'a yazılmaz).
       - name: Set Worker Secrets
         env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CF_API_TOKEN }}
-          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CF_ACCOUNT_ID }}
+          TMDB_READ_TOKEN: ${{ secrets.TMDB_READ_TOKEN }}
+          VIDROCK_RESOLVER_URL: ${{ secrets.VIDROCK_RESOLVER_URL }}
+          ANTHOLOGY_SCRAPER_URL: ${{ secrets.ANTHOLOGY_SCRAPER_URL }}
+          FILMMAKINESI_SCRAPER_URL: ${{ secrets.FILMMAKINESI_SCRAPER_URL }}
+          CINEPRO_URL: ${{ secrets.CINEPRO_URL }}
+          VIDRIFT_COLOR: e4202b
+          VIDRIFT_BRAND: LOVELL
+          OMDB_API_KEY: '89244d93'
         run: |
-          echo "${{ secrets.TMDB_READ_TOKEN }}" | npx wrangler secret put TMDB_READ_TOKEN --name lovell
-          echo "${{ secrets.VIDROCK_RESOLVER_URL }}" | npx wrangler secret put VIDROCK_RESOLVER_URL --name lovell
-          echo "${{ secrets.ANTHOLOGY_SCRAPER_URL }}" | npx wrangler secret put ANTHOLOGY_SCRAPER_URL --name lovell
-          echo "${{ secrets.FILMMAKINESI_SCRAPER_URL }}" | npx wrangler secret put FILMMAKINESI_SCRAPER_URL --name lovell
-          echo "e4202b" | npx wrangler secret put VIDRIFT_COLOR --name lovell
-          echo "LOVELL" | npx wrangler secret put VIDRIFT_BRAND --name lovell
-          echo "89244d93" | npx wrangler secret put OMDB_API_KEY --name lovell
-        continue-on-error: true
+          node -e "
+            const keys = ['TMDB_READ_TOKEN','VIDROCK_RESOLVER_URL','ANTHOLOGY_SCRAPER_URL','FILMMAKINESI_SCRAPER_URL','CINEPRO_URL','VIDRIFT_COLOR','VIDRIFT_BRAND','OMDB_API_KEY'];
+            const out = {};
+            for (const k of keys) { const v = (process.env[k] || '').trim(); if (v) out[k] = v; }
+            require('fs').writeFileSync('secrets.json', JSON.stringify(out));
+            console.log('Yüklenecek:', Object.keys(out).join(', ') || '(yok)');
+          "
+          for i in 1 2 3; do
+            $WRANGLER secret bulk secrets.json --name lovell && break
+            [ $i = 3 ] && exit 1
+            sleep 15
+          done
+          rm -f secrets.json
