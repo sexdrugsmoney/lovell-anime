@@ -1213,7 +1213,8 @@ async function mountPlayer(ctx, index) {
   const [Art, Hls, Dash] = await Promise.all([getArt(), isHls ? getHls() : null, isDash ? getDash() : null]);
   if (player !== p) return;
   const subs = src.subtitles || [];
-  const firstSub = subs.find(t => t.lang === 'tr') || subs[0];
+  // Dublajlı kaynakta altyazı kendiliğinden açılmaz (listede kalır)
+  const firstSub = src.dub ? null : subs.find(t => t.lang === 'tr') || subs[0];
   const attachHls = (video, url) => {
     if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = url; return; }
     if (!Hls?.isSupported()) { stageError(ctx, 'HLS oynatıcısı yüklenemedi. İnternet bağlantını kontrol et.'); return; }
@@ -1221,6 +1222,20 @@ async function mountPlayer(ctx, index) {
     p.hls.loadSource(url);
     p.hls.attachMedia(video);
     p.hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) stageError(ctx, 'Akış oynatılamadı (HLS hatası).'); });
+    // Çok sesli akışlar (ör. dublaj kaynaklarında Türkçe + İngilizce): tercihe göre ses izini seç, ayarlara "Ses" ekle
+    p.hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, d) => {
+      const tracks = d.audioTracks || [];
+      if (tracks.length < 2) return;
+      const isTr = t => /^(tr|tur)\b/i.test(t.lang || '') || /türk|turk/i.test(t.name || '');
+      const trI = tracks.findIndex(isTr);
+      const want = store.get('preferDub', true) ? trI : tracks.findIndex(t => !isTr(t));
+      if (want >= 0 && p.hls.audioTrack !== want) p.hls.audioTrack = want;
+      const label = (t, i) => t.name || t.lang || `Ses ${i + 1}`;
+      const setting = {name: 'audio', html: 'Ses', tooltip: label(tracks[p.hls.audioTrack] || tracks[0], p.hls.audioTrack),
+        selector: tracks.map((t, i) => ({html: label(t, i), i, default: i === p.hls.audioTrack})),
+        onSelect(item) { p.hls.audioTrack = item.i; return item.html; }};
+      setTimeout(() => { try { if (!p.art) return; if (p.audioSetting) p.art.setting.update(setting); else p.art.setting.add(setting); p.audioSetting = true; } catch {} }, 0);
+    });
   };
   const attachDash = (video, url) => {
     if (!Dash?.MediaPlayer) { stageError(ctx, 'DASH oynatıcısı yüklenemedi. İnternet bağlantını kontrol et.'); return; }
