@@ -18,6 +18,7 @@ let myList = store.get('list', []);
 let progress = store.get('progress', {});   // "kind:id:s:e" -> {t, d, at}
 let recent = store.get('recent', {});       // "kind:id" -> {item, s, e, at}
 let CLOUD = false;                          // Cloudflare Workers sürümü: yerel dosya yok
+let SUBS_ON = false;                        // sunucuda Türkçe altyazı servisi (Wyzie) açık mı
 let library = new Set();                    // "kind:id" anahtarları (bilgisayardaki dosyalar)
 let libraryEpisodes = new Map();            // "kind:id" -> Set("s:e")
 
@@ -887,8 +888,11 @@ async function loadSources(ctx) {
     ctx.deciding = false;
     if (ctx.v !== routeId || ctx.mode) return;
   }
+  const mem = srcMemory.get(ctx.a);
+  const memIdx = mem?.kind === 'source' ? ctx.sources.findIndex(x => x.name === mem.name) : -1;
   const tr = store.get('preferTr', true) ? ctx.sources.findIndex(x => x.lang === 'tr') : -1;
-  if (tr >= 0) mountPlayer(ctx, tr);
+  if (memIdx >= 0) mountPlayer(ctx, memIdx);
+  else if (tr >= 0) mountPlayer(ctx, tr);
   else if (ctx.embeds.length) mountEmbed(ctx, preferredEmbed(ctx));
   else if (ctx.sources.length) mountPlayer(ctx, 0);
   else if (ctx.remote !== 'loading') emptyStage(ctx);
@@ -919,9 +923,25 @@ async function fetchRemote(ctx, budget = 0) {
   } else if (ctx.mode === 'player') refreshSrcBar(ctx);
 }
 // Tercihleri hatırla: son seçilen embed ve (anime için) altyazılı / dublaj.
+// Başlık başına kaynak hafızası: en son gerçekten oynayan kaynak (oynatıcı ilerleme bildirdiğinde kaydedilir).
+const srcMemory = {
+  get: a => store.get('srcMem', {})[keyOf(a)] || null,
+  set(a, kind, name) {
+    const all = store.get('srcMem', {});
+    if (all[keyOf(a)]?.name === name) return;
+    all[keyOf(a)] = {kind, name, at: Date.now()};
+    const keys = Object.keys(all);
+    if (keys.length > 300) keys.sort((x, y) => all[x].at - all[y].at).slice(0, 50).forEach(k => delete all[k]);
+    store.set('srcMem', all);
+  },
+};
 function preferredEmbed(ctx) {
   const pref = store.get('embedPref', null);
   const list = ctx.embeds || [];
+  const mem = srcMemory.get(ctx.a);
+  if (mem?.kind === 'embed') { const i = list.findIndex(e => e.name === mem.name); if (i >= 0) return i; }
+  // Türkçe öncelik açıksa anime için Türkçe fansub arşivi önce gelir
+  if (store.get('preferTr', true)) { const i = list.findIndex(e => e.tr); if (i >= 0) return i; }
   if (pref?.id) { const i = list.findIndex(e => e.id === pref.id); if (i >= 0) return i; }
   if (pref?.lang) { const i = list.findIndex(e => e.anime && e.lang === pref.lang); if (i >= 0) return i; }
   return 0;
@@ -932,8 +952,10 @@ function srcBarHtml(ctx, mode, index) {
   const chip = (cls, attr, text) => `<button class="source-chip ${cls}" type="button" ${attr} title="${esc(text)}">${esc(text)}</button>`;
   const status = ctx.remote === 'loading' ? '<span class="src-status" role="status"><span class="spin"></span>Doğrudan kaynaklar aranıyor…</span>' : '';
   const own = direct.length && direct.every(x => x.origin === 'local' || x.origin === 'manifest');
+  const trList = embeds.map((e, i) => [e, i]).filter(([e]) => e.tr), genList = embeds.map((e, i) => [e, i]).filter(([e]) => !e.tr);
   return `${direct.length ? `<span class="source-label">${own ? 'Dosya' : 'Doğrudan'}</span><div class="source-list">${direct.map((x, i) => chip(`${mode === 'player' && i === index ? 'on' : ''} ${x.lang === 'tr' ? 'is-tr' : ''}`, `data-source="${i}"`, x.name)).join('')}</div>` : ''}
-    ${embeds.length ? `<span class="source-label">Embed</span><div class="source-list">${embeds.map((e, i) => (i < EMBED_SHOWN || ctx.moreEmbeds || (mode === 'embed' && i === index)) ? chip(`${mode === 'embed' && i === index ? 'on' : ''} ${e.backup ? 'is-backup' : ''}`, `data-embed="${i}"`, e.name) : '').join('')}${embeds.length > EMBED_SHOWN ? `<button class="source-chip source-chip-dim" type="button" data-more-embeds>${ctx.moreEmbeds ? 'Daha az' : `Daha fazla (+${embeds.length - EMBED_SHOWN})`}</button>` : ''}${!CLOUD && mode === 'embed' ? '<button class="source-chip source-chip-dim" type="button" id="add-local-hint" title="Kendi dosyanı ekle">+ Dosyam</button>' : ''}</div>` : ''}
+    ${trList.length ? `<span class="source-label">Türkçe fansub</span><div class="source-list">${trList.map(([e, i]) => chip(`${mode === 'embed' && i === index ? 'on' : ''} is-tr`, `data-embed="${i}"`, e.name)).join('')}</div>` : ''}
+    ${genList.length ? `<span class="source-label">Embed</span><div class="source-list">${genList.map(([e, i], k) => (k < EMBED_SHOWN || ctx.moreEmbeds || (mode === 'embed' && i === index)) ? chip(`${mode === 'embed' && i === index ? 'on' : ''} ${e.backup ? 'is-backup' : ''}`, `data-embed="${i}"`, e.name) : '').join('')}${genList.length > EMBED_SHOWN ? `<button class="source-chip source-chip-dim" type="button" data-more-embeds>${ctx.moreEmbeds ? 'Daha az' : `Daha fazla (+${genList.length - EMBED_SHOWN})`}</button>` : ''}${!CLOUD && mode === 'embed' ? '<button class="source-chip source-chip-dim" type="button" id="add-local-hint" title="Kendi dosyanı ekle">+ Dosyam</button>' : ''}</div>` : ''}
     ${status}`;
 }
 function bindSrcBar(ctx) {
@@ -1045,7 +1067,7 @@ function mountEmbed(ctx, index) {
       allowfullscreen
       allow="autoplay; fullscreen; encrypted-media *; autoplay *; fullscreen *; picture-in-picture *"
       title="${esc(ctx.a.title)}"
-      referrerpolicy="strict-origin-when-cross-origin"
+      referrerpolicy="${embed.referrer === 'no-referrer' ? 'no-referrer' : 'strict-origin-when-cross-origin'}"
     ></iframe>
     <div class="next-up" id="next-up" hidden></div>
   </div>
@@ -1075,7 +1097,7 @@ function mountEmbed(ctx, index) {
     if (!iframeEl || (e.source !== iframeEl.contentWindow && e.origin !== embedOrigin)) return;
     const ev = parsePlayerMessage(e.data);
     if (!ev) return;
-    if (ev.time > 0 && ev.duration > 0 && Date.now() - lastSave > 4000) { lastSave = Date.now(); saveProgress(ctx.a, ctx.s, ctx.e, ev.time, ev.duration); }
+    if (ev.time > 0 && ev.duration > 0 && Date.now() - lastSave > 4000) { lastSave = Date.now(); saveProgress(ctx.a, ctx.s, ctx.e, ev.time, ev.duration); srcMemory.set(ctx.a, 'embed', embed.name); }
     if (ev.episode?.s && ev.episode?.e) { history.replaceState(null, '', watchHref(ctx.a, ev.episode.s, ev.episode.e)); ctx.s = ev.episode.s; ctx.e = ev.episode.e; updateNow(ctx); }
     if (ev.exit) history.back();
     if (ev.ended && !endedOnce && !(ev.duration > 0 && ev.time > 0 && ev.duration - ev.time > 90)) {
@@ -1173,8 +1195,8 @@ async function mountPlayer(ctx, index) {
       volume: Number(store.get('volume', 0.8)), autoplay: false, autoSize: false, autoMini: false,
       setting: true, playbackRate: true, aspectRatio: true, pip: true, fullscreen: true, fullscreenWeb: true,
       hotkey: true, mutex: true, backdrop: true, playsInline: true, miniProgressBar: true, lock: true, fastForward: true, autoOrientation: true,
-      subtitle: firstSub ? {url: firstSub.url, type: 'vtt', encoding: 'utf-8', escape: true, style: {fontSize: 'clamp(16px, 2.6vw, 30px)', textShadow: '0 1px 3px #000, 0 0 2px #000'}} : {},
-      settings: subs.length ? [{html: 'Altyazı', tooltip: firstSub?.label || 'Kapalı', selector: [{html: 'Kapalı', off: true}, ...subs.map(t => ({html: t.label, url: t.url, default: t === firstSub}))], onSelect(item) { if (item.off) { p.art.subtitle.show = false; } else { p.art.subtitle.show = true; p.art.subtitle.switch(item.url, {name: item.html}); } return item.html; }}] : [],
+      subtitle: firstSub ? {url: firstSub.url, type: firstSub.type || 'vtt', encoding: 'utf-8', escape: true, style: {fontSize: 'clamp(16px, 2.6vw, 30px)', textShadow: '0 1px 3px #000, 0 0 2px #000'}} : {style: {fontSize: 'clamp(16px, 2.6vw, 30px)', textShadow: '0 1px 3px #000, 0 0 2px #000'}},
+      settings: subs.length ? [subtitleSetting(p, subs, firstSub)] : [],
       controls: nextOf(ctx) ? [{position: 'left', index: 15, html: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 5v14l9-7zM16 5h2v14h-2z"/></svg>', tooltip: 'Sonraki bölüm', click: () => { const n = nextOf(ctx); if (n) go(ctx, n.s, n.e); }}] : [],
     });
     p.art.on('video:volumechange', () => store.set('volume', p.art.volume));
@@ -1192,6 +1214,10 @@ async function mountPlayer(ctx, index) {
     if (isHls) attachHls(video, src.url); else if (isDash) attachDash(video, src.url); else video.src = src.url;
   }
   p.video = video;
+  setupSkip(ctx, video, p);
+  // Türkçe altyazısı olmayan yabancı kaynaklara Türkçe altyazı ekle (sunucuda Wyzie anahtarı varsa)
+  if (p.art && SUBS_ON && src.lang !== 'tr' && !subs.some(t => t.lang === 'tr') && !isAnimeArchive(src)) addTurkishSubs(ctx, p, subs);
+  video.addEventListener('timeupdate', () => { if (video.currentTime > 20) srcMemory.set(ctx.a, 'source', src.name); }, {once: false, passive: true});
 
   const k = `${keyOf(ctx.a)}:${ctx.s}:${ctx.e}`;
   let lastSave = 0;
@@ -1205,6 +1231,55 @@ async function mountPlayer(ctx, index) {
   video.addEventListener('error', () => stageError(ctx, src.type === 'mkv' ? 'Bu MKV dosyası tarayıcıda açılamadı. MP4 (H.264 + AAC) olarak dönüştürmeyi dene.' : 'Video açılamadı. Dosya biçimi tarayıcı tarafından desteklenmiyor olabilir.'));
   video.addEventListener('ended', () => { persist(); const n = nextOf(ctx); if (n) nextUp(ctx, n); });
   p.cleanup.push(persist);
+}
+// ArtPlayer altyazı ayarı (vtt ve srt)
+function subtitleSetting(p, list, current) {
+  return {name: 'subs', html: 'Altyazı', tooltip: current?.label || 'Kapalı', selector: [{html: 'Kapalı', off: true}, ...list.map(t => ({html: t.label, url: t.url, type: t.type || 'vtt', default: t === current}))],
+    onSelect(item) { if (item.off) p.art.subtitle.show = false; else { p.art.subtitle.show = true; p.art.subtitle.switch(item.url, {name: item.html, type: item.type}); } return item.html; }};
+}
+const isAnimeArchive = src => src.origin === 'local' || src.origin === 'manifest';
+async function addTurkishSubs(ctx, p, existing) {
+  let d;
+  try { d = await api(`/api/subs/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}`, 15000, {quiet: true}); } catch { return; }
+  const extra = d?.subtitles || [];
+  if (!extra.length || player !== p || !p.art) return;
+  const all = [...extra, ...existing];
+  try {
+    if (existing.length) p.art.setting.update(subtitleSetting(p, all, extra[0]));
+    else p.art.setting.add(subtitleSetting(p, all, extra[0]));
+    p.art.subtitle.show = true;
+    p.art.subtitle.switch(extra[0].url, {name: extra[0].label, type: extra[0].type});
+    toast('Türkçe altyazı eklendi', 'success');
+  } catch {}
+}
+// AniSkip: anime bölümlerinde giriş / bitiş / özet aralıkları (MAL id + bölüm). Düğmeyle ya da ayara göre otomatik atlar.
+function setupSkip(ctx, video, p) {
+  if (secOf(ctx.a) !== 'anime' || isMovie(ctx.a)) return;
+  const ids = animeIds(ctx.a, ctx.s, ctx.e);
+  if (!ids?.mal) return;
+  const btn = document.createElement('button');
+  btn.type = 'button'; btn.className = 'skip-btn'; btn.hidden = true;
+  $('#stage .stage-inner')?.append(btn);
+  let ranges = [];
+  const label = t => /op/.test(t) ? 'Girişi atla' : /ed/.test(t) ? 'Bitişi atla' : 'Özeti atla';
+  video.addEventListener('loadedmetadata', async () => {
+    try {
+      const r = await fetch(`https://api.aniskip.com/v2/skip-times/${ids.mal}/${ids.ep}?types=op&types=ed&types=mixed-op&types=mixed-ed&types=recap&episodeLength=${Math.round(video.duration) || 0}`, {signal: AbortSignal.timeout(8000)});
+      const d = await r.json();
+      ranges = (d.results || []).map(x => ({type: x.skipType, start: x.interval.startTime, end: x.interval.endTime})).filter(x => x.end > x.start);
+    } catch {}
+  }, {once: true});
+  const done = new Set();
+  const onTime = () => {
+    const t = video.currentTime, cur = ranges.find(x => t >= x.start && t < x.end - 1);
+    if (!cur) { btn.hidden = true; return; }
+    if (store.get('autoSkip', false) && !done.has(cur.start)) { done.add(cur.start); video.currentTime = cur.end; toast(`${label(cur.type).replace(' atla', '')} atlandı`); return; }
+    btn.hidden = false;
+    btn.textContent = `${label(cur.type)} ›`;
+    btn.onclick = () => { video.currentTime = cur.end; btn.hidden = true; };
+  };
+  video.addEventListener('timeupdate', onTime);
+  p.cleanup.push(() => { video.removeEventListener('timeupdate', onTime); btn.remove(); });
 }
 function nextUp(ctx, n) {
   const box = $('#next-up');
@@ -1380,7 +1455,20 @@ function setStatus(source) {
 
 // ---------------- Canlı TV ----------------
 const M3U_URL = 'https://raw.githubusercontent.com/falsisdev/anthology/main/providers/M3U/Liste/canli.m3u';
+const IPTV_ORG_TR = 'https://iptv-org.github.io/iptv/countries/tr.m3u';
 let liveCache = null;     // {at, list}
+// iptv-org kategorileri İngilizce; Türkçe gruplara çevir, adlardaki "(720p)", "[Not 24/7]" gibi ekleri temizle.
+const IPTV_GROUP = {news: '🇹🇷 HABER KANALLARI', sports: '🇹🇷 SPOR KANALLARI', movies: '🇹🇷 SİNEMA KANALLARI', music: '🇹🇷 MÜZİK KANALLARI', documentary: '🇹🇷 BELGESEL KANALLARI', kids: '🇹🇷 BELGESEL KANALLARI', education: '🇹🇷 BELGESEL KANALLARI', animation: '🇹🇷 BELGESEL KANALLARI'};
+function fromIptvOrg(ch) {
+  const first = String(ch.group || '').split(';')[0].trim().toLowerCase();
+  return {...ch, name: ch.name.replace(/\s*\((\d{3,4}p|\d+i)\)/gi, '').replace(/\s*\[[^\]]*\]/g, '').trim(), group: IPTV_GROUP[first] || '🇹🇷 Yerel & Diğer', extra: true};
+}
+const chKey = n => String(n || '').toLocaleLowerCase('tr').replace(/\b(hd|sd|fhd|uhd|4k|tv|türk|turk)\b/g, '').replace(/[^a-z0-9çğıöşü]+/g, '');
+function mergeChannels(primary, extra) {
+  const seen = new Set(primary.flatMap(c => [chKey(c.name), c.url]));
+  // Yalnızca HTTPS akışlar (site HTTPS'ten sunulduğu için HTTP akışlar tarayıcıda engellenir)
+  return [...primary, ...extra.filter(c => /^https:/.test(c.url) && c.name && !seen.has(chKey(c.name)) && !seen.has(c.url) && (seen.add(chKey(c.name)), true))];
+}
 let liveOrder = [];       // ekrandaki sırayla tüm kanallar (kanal değiştirme için)
 // Kanal listesi oturum boyunca önbellekte tutulur; her girişte GitHub'dan yeniden indirilmez.
 async function fetchChannels() {
@@ -1388,9 +1476,11 @@ async function fetchChannels() {
   try { const c = JSON.parse(sessionStorage.getItem('lovell.m3u')); if (c?.list?.length && Date.now() - c.at < 30 * 60e3) return (liveCache = c).list; } catch {}
   busyStart();
   try {
-    const res = await fetch(M3U_URL, {signal: AbortSignal.timeout(15000)});
-    if (!res.ok) throw Error(`Kanal listesi alınamadı (HTTP ${res.status})`);
-    const list = parseM3U(await res.text());
+    // İki açık liste birlikte okunur: Anthology listesi (öncelikli) + iptv-org'un Türkiye arşivi.
+    const get = url => fetch(url, {signal: AbortSignal.timeout(15000)}).then(r => r.ok ? r.text() : Promise.reject(Error(`HTTP ${r.status}`)));
+    const [main, extra] = await Promise.allSettled([get(M3U_URL), get(IPTV_ORG_TR)]);
+    if (main.status === 'rejected' && extra.status === 'rejected') throw Error(`Kanal listesi alınamadı (${main.reason?.message || 'bağlantı yok'})`);
+    const list = mergeChannels(main.status === 'fulfilled' ? parseM3U(main.value) : [], extra.status === 'fulfilled' ? parseM3U(extra.value).map(fromIptvOrg) : []);
     if (!list.length) throw Error('Kanal listesi boş geldi');
     liveCache = {at: Date.now(), list};
     try { sessionStorage.setItem('lovell.m3u', JSON.stringify(liveCache)); } catch {}
@@ -2177,6 +2267,7 @@ const PREFS = [
   ['heroTrailer', 'Vitrinde fragmanı otomatik oynat', 'Ana sayfadaki büyük vitrinde birkaç saniye sonra sessiz fragman başlar.'],
   ['autoNext', 'Sonraki bölüme otomatik geç', 'Bölüm bitince 8 saniyelik geri sayımla sıradakini açar.'],
   ['resume', 'Kaldığım yerden devam et', 'Bir videoyu yeniden açtığında son izlediğin saniyeden başlar.'],
+  ['autoSkip', 'Anime giriş ve bitişini otomatik atla', 'AniSkip verisi olan bölümlerde açılış / kapanış şarkısını kendiliğinden geçer (doğrudan kaynaklarda).', false],
   ['preferTr', 'Türkçe kaynakları önce aç', 'Türkçe altyazılı ya da dublajlı doğrudan kaynak bulunursa oynatma onunla başlar.'],
 ];
 const THEMES = [['system', 'Sistem'], ['dark', 'Koyu'], ['light', 'Açık']];
@@ -2196,7 +2287,7 @@ function openSettings() {
       <div class="set-row"><span><strong>Tema</strong><small>“Sistem” cihazının açık / koyu ayarını izler.</small></span><div class="seg" role="radiogroup" aria-label="Tema">${THEMES.map(([k, t]) => `<button type="button" role="radio" aria-checked="${themeMode() === k}" data-theme-set="${k}">${t}</button>`).join('')}</div></div>
     </section>
     <section class="set-sec"><h3>Oynatma</h3>
-      ${PREFS.map(([k, t, sub]) => `<label class="set-row"><span><strong>${t}</strong><small>${sub}</small></span><input type="checkbox" role="switch" class="switch" data-pref="${k}" ${store.get(k, true) !== false ? 'checked' : ''}></label>`).join('')}
+      ${PREFS.map(([k, t, sub, def = true]) => `<label class="set-row"><span><strong>${t}</strong><small>${sub}</small></span><input type="checkbox" role="switch" class="switch" data-pref="${k}" ${store.get(k, def) ? 'checked' : ''}></label>`).join('')}
     </section>
     <section class="set-sec"><h3>Verilerin</h3>
       <p class="set-stats"><span><b>${list}</b> başlık listende</span><span><b>${hist}</b> başlık geçmişte</span><span><b>${favs}</b> favori kanal</span></p>
@@ -2342,6 +2433,6 @@ addEventListener('scroll', onScroll, {passive: true});
 onScroll();
 Promise.all([
   loadGenres(),
-  api('/api/status').then(s => { CLOUD = s.mode === 'cloud'; document.documentElement.dataset.mode = CLOUD ? 'cloud' : 'local'; }).catch(() => {}),
+  api('/api/status').then(s => { CLOUD = s.mode === 'cloud'; SUBS_ON = !!s.subs; document.documentElement.dataset.mode = CLOUD ? 'cloud' : 'local'; }).catch(() => {}),
   refreshLibrary(false),
 ]).finally(route);

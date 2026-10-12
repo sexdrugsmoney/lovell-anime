@@ -117,3 +117,33 @@ test('devre kesici: hata veren servis kısa süre tekrar sorulmaz, yavaş servis
   await fetchRemoteSources({kind: 'tv', id: 1}, {anthologyUrl: 'https://ant.example', deadline: 500});
   assert.equal(again, 1);
 });
+
+test('Türkçe fansub arşivi: AniList + bölüm → sıralı fansub embed\'leri', async () => {
+  const {fetchTrArchive} = await import('../lib/providers.js');
+  let asked;
+  globalThis.fetch = async url => {
+    asked = String(url);
+    return jsonRes({anilist: 999, bolumler: [
+      {n: 1, src: [['SIBNET', 'A', 'https://video.sibnet.ru/shell.php?videoid=1', 'ok'], ['MAIL', 'Grup', 'https://my.mail.ru/video/embed/1', 'ok'], ['UQLOAD', 'Grup', 'https://uqload.com/embed-x.html', 'ok'], ['VK', 'B', 'https://href.li/?https://vk.com/video_ext.php?oid=1&id=2', 'ok'], ['UQLOAD', 'C', 'https://uqload.com/embed-y.html', null], ['MEGA', 'D', 'https://mega.nz/embed/x', 'ok']]},
+      {n: 2, src: [['UQLOAD', 'Grup', 'https://uqload.com/embed-2.html', 'ok']]},
+    ]});
+  };
+  const list = await fetchTrArchive({index: {map: {999: 'ornek-anime'}}, alId: 999, episode: 1});
+  assert.match(asked, /\/public\/data\/anime\/ornek-anime\.json$/);
+  assert.deepEqual(list.map(e => e.name), ['Grup · Uqload', 'Grup · Mail.ru', 'B · VK', 'C · Uqload'], 'doğrulanmışlar önce, gömülemeyenler (Sibnet, Mega) yok');
+  assert.equal(list[2].url, 'https://vk.com/video_ext.php?oid=1&id=2', 'href.li sarmalayıcısı çıkarılır');
+  assert.ok(list.every(e => e.tr && e.referrer === 'no-referrer' && e.lang === 'sub'));
+  assert.deepEqual(await fetchTrArchive({index: {map: {}}, alId: 1, episode: 1}), [], 'dizinde yoksa istek atılmaz');
+  assert.deepEqual(await fetchTrArchive({index: {map: {999: 'ornek-anime'}}, alId: 999, episode: 7}), []);
+});
+
+test('Türkçe altyazı: anahtar yoksa istek atılmaz, varsa srt/vtt listesi döner', async () => {
+  const {fetchTurkishSubs} = await import('../lib/providers.js');
+  let calls = 0;
+  globalThis.fetch = async url => { calls++; assert.match(String(url), /language=tr/); return jsonRes([{url: 'https://sub.example/1.srt', format: 'srt', release: 'Arcane.S01E01'}, {url: 'http://bad/2.srt', format: 'srt'}, {url: 'https://sub.example/3.ass', format: 'ass'}]); };
+  assert.deepEqual(await fetchTurkishSubs({kind: 'tv', id: 1, key: ''}), []);
+  assert.equal(calls, 0);
+  const subs = await fetchTurkishSubs({kind: 'tv', id: 94605, season: 1, episode: 1, key: 'k'});
+  assert.deepEqual(subs.map(s => [s.type, s.url]), [['srt', 'https://sub.example/1.srt']]);
+  assert.match(subs[0].label, /^Türkçe · Arcane/);
+});

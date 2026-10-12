@@ -1573,3 +1573,8 @@ main { overflow-x: clip; }
 .stage-error { display: flex; align-items: center; gap: 14px; }
 .source-chip.is-backup { opacity: .62; border-style: dashed; }
 .source-chip.is-backup:hover, .source-chip.is-backup.on { opacity: 1; }
+
+/* ---------- AniSkip: giriş / bitiş atlama ---------- */
+.skip-btn { position: absolute; z-index: 30; right: 22px; bottom: 74px; height: 40px; padding: 0 18px; border-radius: 8px; border: 1px solid rgba(255,255,255,.35); background: rgba(10,10,14,.78); color: #fff; font-weight: 700; font-size: 14px; backdrop-filter: blur(8px); box-shadow: 0 10px 30px -10px rgba(0,0,0,.7); animation: rise .3s var(--ease-out, ease) both; transition: background .2s, transform .2s; }
+.skip-btn:hover { background: #fff; color: #000; transform: translateY(-2px); }
+.skip-btn[hidden] { display: none; }

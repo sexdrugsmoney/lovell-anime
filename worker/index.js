@@ -3,7 +3,8 @@
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
 import {configure, browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
-import {buildEmbeds, fetchRemoteSources, normalizeSources} from '../lib/providers.js';
+import {buildEmbeds, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs} from '../lib/providers.js';
+import trArchiveIndex from '../src/data/tr-archive-index.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
 
@@ -276,7 +277,7 @@ async function api(url, env) {
   setup(env);
   const q = url.searchParams;
   const path = url.pathname;
-  if (path === '/api/status') return json({mode: 'cloud', tmdb: authProblem ? 'anahtar geçersiz' : lastOk ? 'bağlı' : 'henüz denenmedi', authProblem, lastSuccess: lastOk, auth: env.TMDB_READ_TOKEN ? 'okuma jetonu (v4)' : env.TMDB_API_KEY ? 'API anahtarı' : 'yok', dataErrors, library: 0});
+  if (path === '/api/status') return json({mode: 'cloud', tmdb: authProblem ? 'anahtar geçersiz' : lastOk ? 'bağlı' : 'henüz denenmedi', authProblem, lastSuccess: lastOk, auth: env.TMDB_READ_TOKEN ? 'okuma jetonu (v4)' : env.TMDB_API_KEY ? 'API anahtarı' : 'yok', dataErrors, library: 0, subs: !!env.WYZIE_API_KEY});
   if (path === '/api/genres') return json(genresFor(q.get('section')), 200, 86400);
   if (path === '/api/home') return json(await home(q.get('section')), 200, 300);
   if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 200, 300);
@@ -326,7 +327,10 @@ async function api(url, env) {
     const out = {folder: `${kind}-${id}`, cloud: true};
     if (phase !== 'remote') {
       out.sources = await cloudSources(env, mediaKey(kind, id, season, episode));
-      out.embeds = buildEmbeds(kind, id, alId, season, episode, {brand: (env.VIDRIFT_BRAND || 'LOVELL').slice(0, 28), brandColor: env.VIDRIFT_COLOR || 'e4202b', brandLogo: env.VIDRIFT_LOGO || '', malId, animeEpisode});
+      // Türkçe fansub arşivi (anime) en başta; arşive ulaşılamazsa 2,5 sn'de vazgeçilir
+      const arcAl = kind === 'al' ? Number(id) : alId;
+      const trEmbeds = arcAl ? await fetchTrArchive({index: trArchiveIndex, alId: arcAl, episode: animeEpisode || episode}).catch(() => []) : [];
+      out.embeds = [...trEmbeds, ...buildEmbeds(kind, id, alId, season, episode, {brand: (env.VIDRIFT_BRAND || 'LOVELL').slice(0, 28), brandColor: env.VIDRIFT_COLOR || 'e4202b', brandLogo: env.VIDRIFT_LOGO || '', malId, animeEpisode})];
       out.vidrift = out.embeds.find(e => e.id === 'vidrift')?.url || null;
     }
     if (phase !== 'fast') {
@@ -346,6 +350,8 @@ async function api(url, env) {
     }
     return json(out);
   }
+  m = path.match(/^\/api\/subs\/(tv|movie)\/(\d{1,9})$/);
+  if (m) return json({subtitles: await fetchTurkishSubs({kind: m[1], id: m[2], season: int(q.get('s')), episode: int(q.get('e')), key: env.WYZIE_API_KEY})}, 200, 3600);
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);
   return json({error: 'Bilinmeyen uç nokta'}, 404);

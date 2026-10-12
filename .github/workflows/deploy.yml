@@ -62,12 +62,13 @@ jobs:
           ANTHOLOGY_SCRAPER_URL: ${{ secrets.ANTHOLOGY_SCRAPER_URL }}
           FILMMAKINESI_SCRAPER_URL: ${{ secrets.FILMMAKINESI_SCRAPER_URL }}
           CINEPRO_URL: ${{ secrets.CINEPRO_URL }}
+          WYZIE_API_KEY: ${{ secrets.WYZIE_API_KEY }}
           VIDRIFT_COLOR: e4202b
           VIDRIFT_BRAND: LOVELL
           OMDB_API_KEY: '89244d93'
         run: |
           node -e "
-            const keys = ['TMDB_READ_TOKEN','VIDROCK_RESOLVER_URL','ANTHOLOGY_SCRAPER_URL','FILMMAKINESI_SCRAPER_URL','CINEPRO_URL','VIDRIFT_COLOR','VIDRIFT_BRAND','OMDB_API_KEY'];
+            const keys = ['TMDB_READ_TOKEN','VIDROCK_RESOLVER_URL','ANTHOLOGY_SCRAPER_URL','FILMMAKINESI_SCRAPER_URL','CINEPRO_URL','WYZIE_API_KEY','VIDRIFT_COLOR','VIDRIFT_BRAND','OMDB_API_KEY'];
             const out = {};
             for (const k of keys) { const v = (process.env[k] || '').trim(); if (v) out[k] = v; }
             require('fs').writeFileSync('secrets.json', JSON.stringify(out));

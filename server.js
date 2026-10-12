@@ -6,7 +6,7 @@ import {fileURLToPath} from 'node:url';
 import {ROOT} from './lib/env.js';
 import {tmdbGet, netStatus} from './lib/net.js';
 import {browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from './lib/catalog.js';
-import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources} from './lib/media.js';
+import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs} from './lib/media.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -134,7 +134,7 @@ export const server = http.createServer(async (req, res) => {
   const q = u.searchParams;
   try {
     // ---- API ----
-    if (u.pathname === '/api/status') return json(res, 200, {...netStatus(), dataErrors, mediaDir: MEDIA_DIR(), library: library().length});
+    if (u.pathname === '/api/status') return json(res, 200, {...netStatus(), dataErrors, mediaDir: MEDIA_DIR(), library: library().length, subs: !!process.env.WYZIE_API_KEY});
     if (u.pathname === '/api/genres') return json(res, 200, genresFor(q.get('section')), 86400);
     if (u.pathname === '/api/home') return json(res, 200, await home(q.get('section')), 300);
     if (u.pathname === '/api/browse') return json(res, 200, await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 300);
@@ -157,7 +157,9 @@ export const server = http.createServer(async (req, res) => {
       const out = {folder: `${kind}-${id}`};
       if (phase !== 'remote') {
         out.sources = sources(kind, id, season, episode);
-        out.embeds = embedSources(kind, id, alId, season, episode, malId, animeEpisode);
+        // Türkçe fansub arşivi (anime) en başta; arşive ulaşılamazsa 2,5 sn'de vazgeçilir
+        const trEmbeds = await trArchiveEmbeds(kind === 'al' ? id : alId, animeEpisode || episode);
+        out.embeds = [...trEmbeds, ...embedSources(kind, id, alId, season, episode, malId, animeEpisode)];
         out.vidrift = out.embeds.find(e => e.id === 'vidrift')?.url || null;
       }
       if (phase !== 'fast') {
@@ -172,6 +174,8 @@ export const server = http.createServer(async (req, res) => {
       }
       return json(res, 200, out);
     }
+    m = u.pathname.match(/^\/api\/subs\/(tv|movie)\/(\d{1,9})$/);
+    if (m) return json(res, 200, {subtitles: await turkishSubs({kind: m[1], id: Number(m[2]), season: int(q.get('s')), episode: int(q.get('e'))})}, 3600);
     if (u.pathname === '/api/library') return json(res, 200, {items: library()});    if (u.pathname === '/api/rescan') { scan(true); return json(res, 200, {items: library()}); }
     if (u.pathname === '/api/img') return imageProxy(u, res);
     if (u.pathname === '/api/sub') {
