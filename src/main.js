@@ -871,7 +871,7 @@ async function loadSources(ctx) {
   if (ctx.v !== routeId) return;
   // Oynatıcı yalnızca kullanıcının kendi veya yayın izni olan video adreslerini açar.
   ctx.sources = d.sources || [];
-  ctx.embeds = d.embeds || [];
+  ctx.embeds = rankEmbeds(d.embeds || []);
   ctx.folder = d.folder;
   ctx.vidrift = d.vidrift || ctx.embeds.find(e => e.id === 'vidrift')?.url || null;
   ctx.mode = null;
@@ -935,6 +935,30 @@ const srcMemory = {
     store.set('srcMem', all);
   },
 };
+// Oynatıcı sağlığı (bu tarayıcıda öğrenilir): ilerleme bildiren ya da uzun süre izlenen embed puan kazanır,
+// hata bildiren ya da açıldıktan hemen sonra bırakılan puan kaybeder. Eski kayıtlar zamanla etkisini yitirir.
+const embedHealth = {
+  all: () => store.get('embedHealth', {}),
+  score(id) {
+    const h = this.all()[id];
+    if (!h) return 0;
+    const decay = Math.pow(0.5, (Date.now() - h.at) / (14 * 864e5));   // iki haftada yarıya iner
+    return (h.ok - 1.5 * h.fail) * decay;
+  },
+  mark(id, ok) {
+    if (!id) return;
+    const all = this.all(), h = all[id] || {ok: 0, fail: 0, at: 0};
+    const decay = h.at ? Math.pow(0.5, (Date.now() - h.at) / (14 * 864e5)) : 1;
+    all[id] = {ok: Math.min(h.ok * decay + (ok ? 1 : 0), 20), fail: Math.min(h.fail * decay + (ok ? 0 : 1), 20), at: Date.now()};
+    store.set('embedHealth', all);
+  },
+};
+// Gruplar (Türkçe fansub → anime → genel) korunur; grup içinde sağlık puanı yüksek olan öne alınır.
+function rankEmbeds(list) {
+  const group = e => e.tr ? 0 : e.anime ? 1 : 2;
+  return list.map((e, i) => ({e, i, s: embedHealth.score(e.id) - (e.backup ? 0.5 : 0)}))
+    .sort((a, b) => group(a.e) - group(b.e) || (Math.abs(b.s - a.s) > 0.01 ? b.s - a.s : a.i - b.i)).map(x => x.e);
+}
 function preferredEmbed(ctx) {
   const pref = store.get('embedPref', null);
   const list = ctx.embeds || [];
@@ -1091,12 +1115,18 @@ function mountEmbed(ctx, index) {
 
   // Oynatıcı olayları: ilerlemeyi kaydet, bitince sonraki bölüm, "tüm sunucular başarısız" olunca sıradaki kaynak.
   const embedOrigin = (() => { try { return new URL(embed.url).origin; } catch { return ''; } })();
-  let lastSave = 0, endedOnce = false, failedOnce = false;
+  let lastSave = 0, endedOnce = false, failedOnce = false, healthMarked = false;
+  const mountedAt = Date.now(), view = ctx.v;
+  const markHealth = ok => { if (!healthMarked) { healthMarked = true; embedHealth.mark(embed.id, ok); } };
+  // 4 dakika açık kalan oynatıcı çalışıyor sayılır (olay göndermeyen oynatıcılar için)
+  const healthTimer = setTimeout(() => markHealth(true), 4 * 60 * 1000);
   const onMessage = e => {
     // Yalnızca bu iframe'den (ya da aynı sağlayıcının iç çerçevesinden) gelen mesajlar
     if (!iframeEl || (e.source !== iframeEl.contentWindow && e.origin !== embedOrigin)) return;
     const ev = parsePlayerMessage(e.data);
     if (!ev) return;
+    if (ev.time > 5) markHealth(true);
+    if (ev.failed) markHealth(false);
     if (ev.time > 0 && ev.duration > 0 && Date.now() - lastSave > 4000) { lastSave = Date.now(); saveProgress(ctx.a, ctx.s, ctx.e, ev.time, ev.duration); srcMemory.set(ctx.a, 'embed', embed.name); }
     if (ev.episode?.s && ev.episode?.e) { history.replaceState(null, '', watchHref(ctx.a, ev.episode.s, ev.episode.e)); ctx.s = ev.episode.s; ctx.e = ev.episode.e; updateNow(ctx); }
     if (ev.exit) history.back();
@@ -1118,6 +1148,9 @@ function mountEmbed(ctx, index) {
     cleanup: [
       () => window.removeEventListener('message', onMessage),
       () => clearTimeout(embedErrorTimer),
+      () => clearTimeout(healthTimer),
+      // Aynı sayfada 30 saniye dolmadan başka kaynağa geçildiyse bu oynatıcı açılmamış sayılır
+      () => { if (ctx.v === view && ctx.v === routeId && Date.now() - mountedAt < 30000) markHealth(false); },
     ]
   };
 
@@ -2297,6 +2330,7 @@ function openSettings() {
         <label class="btn btn-ghost btn-sm"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2M5 5l3-3 3 3M3 12.5h10"/></svg>İçe aktar<input type="file" accept="application/json,.json" data-import hidden></label>
         <button class="btn btn-ghost btn-sm" type="button" data-clear-hist ${hist ? '' : 'disabled'}>Geçmişi temizle</button>
         <button class="btn btn-ghost btn-sm" type="button" data-clear-search>Arama geçmişini sil</button>
+        <button class="btn btn-ghost btn-sm" type="button" data-clear-health title="Oynatıcılar varsayılan sıraya döner, başlık başına hatırlanan kaynaklar silinir">Kaynak sıralamasını sıfırla</button>
       </div>
     </section>
     <footer class="settings-foot"><button class="text-btn" type="button" data-keys>Klavye kısayolları</button><button class="btn btn-play btn-sm" type="button" data-close>Tamam</button></footer>
@@ -2310,6 +2344,7 @@ function openSettings() {
     else if (b.hasAttribute('data-export')) exportData();
     else if (b.hasAttribute('data-clear-hist')) { d.close(); clearHistory(true); }
     else if (b.hasAttribute('data-clear-search')) { store.set('searches', []); toast('Arama geçmişi silindi', 'success'); }
+    else if (b.hasAttribute('data-clear-health')) { store.set('embedHealth', {}); store.set('srcMem', {}); store.set('embedPref', null); toast('Kaynak sıralaması sıfırlandı', 'success'); }
     else if (b.hasAttribute('data-keys')) { d.close(); openShortcuts(); }
   };
   $$('[data-pref]', d).forEach(c => c.onchange = () => { store.set(c.dataset.pref, c.checked); if (c.dataset.pref === 'heroTrailer' && !c.checked) { $('.hero-trailer')?.remove(); $('.hero')?.classList.remove('trailer-on'); } });

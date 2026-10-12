@@ -16,6 +16,13 @@ test('embed adresleri: film, dizi ve anime biçimleri', () => {
   assert.ok(tv.every(e => e.url.startsWith('https://') && e.kind === 'embed'));
   assert.ok(!tv.some(e => e.anime), 'AniList id yoksa anime oynatıcıları eklenmez');
   assert.equal(new Set(tv.map(e => e.url)).size, tv.length, 'adresler tekrarlanmaz');
+  // Ölçümle eklenen oynatıcıların adres biçimleri
+  assert.equal(tv.find(e => e.id === 'cinesrc').url, 'https://cinesrc.st/embed/tv/94605?s=2&e=7');
+  assert.equal(tv.find(e => e.id === 'viduki-s1').url, 'https://viduki.net/api/1/tv/?id=94605&s=2&e=7');
+  assert.equal(movie.find(e => e.id === 'vidsrcru').url, 'https://vidsrc-embed.ru/embed/movie/372058');
+  assert.equal(tv.find(e => e.id === 'vidsrcru').url, 'https://vidsrc-embed.ru/embed/tv/94605/2-7');
+  assert.equal(movie.find(e => e.id === 'vidstorm').url, 'https://vidstorm.ru/movie/372058');
+  assert.ok(tv.findIndex(e => e.backup) > tv.findIndex(e => e.id === 'vidstorm'), 'doğrulananlar yedeklerden önce');
 });
 
 test('anime embed adresleri önce gelir; altyazılı ve dublaj ayrı listelenir', () => {
