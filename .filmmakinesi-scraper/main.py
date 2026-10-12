@@ -352,7 +352,7 @@ def ddizi(
 
     try:
         # 1. TMDB'den TR + orijinal başlık al
-        tmdb_resp = cffi_requests.Session(impersonate="chrome122").get(
+        tmdb_resp = cffi_requests.Session(impersonate="chrome131").get(
             f"https://api.themoviedb.org/3/tv/{tmdbId}?api_key={TMDB_KEY}&language=tr-TR",
             timeout=10,
         )
@@ -362,7 +362,7 @@ def ddizi(
         tr_title = tmdb_data.get("name") or tmdb_data.get("original_name") or ""
         orig_title = tmdb_data.get("original_name") or ""
 
-        session = cffi_requests.Session(impersonate="chrome122")
+        session = cffi_requests.Session(impersonate="chrome131")
         headers = {
             "User-Agent": DDIZI_UA,
             "Referer": DDIZI_BASE + "/",
@@ -503,7 +503,7 @@ def diziwatch(
 
     try:
         # 1. TMDB'den başlık + external IDs al
-        tmdb_resp = cffi_requests.Session(impersonate="chrome122").get(
+        tmdb_resp = cffi_requests.Session(impersonate="chrome131").get(
             f"https://api.themoviedb.org/3/tv/{tmdbId}?api_key={TMDB_KEY}&language=tr-TR&append_to_response=external_ids",
             timeout=10,
         )
@@ -518,7 +518,7 @@ def diziwatch(
         if not search_title:
             return {"sources": [], "error": "TMDB başlık bulunamadı"}
 
-        session = cffi_requests.Session(impersonate="chrome122")
+        session = cffi_requests.Session(impersonate="chrome131")
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36",
             "Referer": DIZIWATCH_BASE + "/",
