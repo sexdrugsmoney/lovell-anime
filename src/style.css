@@ -1572,6 +1572,8 @@ main { overflow-x: clip; }
 .src-status { display: inline-flex; align-items: center; gap: 8px; color: #8d92ad; font-size: 12px; font-weight: 600; margin-left: auto; }
 .src-status .spin { width: 13px; height: 13px; border-width: 2px; }
 .stage-error { display: flex; align-items: center; gap: 14px; }
+.stage-error .btn { flex-shrink: 0; white-space: nowrap; }
+.stage-error p { margin: 0; min-width: 0; }
 .source-chip.is-backup { opacity: .62; border-style: dashed; }
 .source-chip.is-backup:hover, .source-chip.is-backup.on { opacity: 1; }
 

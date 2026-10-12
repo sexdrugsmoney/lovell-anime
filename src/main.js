@@ -1216,8 +1216,12 @@ async function mountPlayer(ctx, index) {
   // Dublajlı kaynakta altyazı kendiliğinden açılmaz (listede kalır)
   const firstSub = src.dub ? null : subs.find(t => t.lang === 'tr') || subs[0];
   const attachHls = (video, url) => {
-    if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = url; return; }
-    if (!Hls?.isSupported()) { stageError(ctx, 'HLS oynatıcısı yüklenemedi. İnternet bağlantını kontrol et.'); return; }
+    // hls.js önce: Chrome'un yeni yerleşik HLS desteği bazı akışlarda takılıyor ve ses izi seçimi sunmuyor.
+    // Yerleşik oynatıcı yalnızca hls.js'in çalışmadığı yerlerde (iOS Safari) kullanılır.
+    if (!Hls?.isSupported()) {
+      if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = url; return; }
+      stageError(ctx, 'HLS oynatıcısı yüklenemedi. İnternet bağlantını kontrol et.'); return;
+    }
     p.hls = new Hls({maxBufferLength: 60});
     p.hls.loadSource(url);
     p.hls.attachMedia(video);
@@ -1366,6 +1370,12 @@ function stageError(ctx, msg) {
   box.innerHTML = `<p>${esc(msg)}</p>${more ? '<button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>' : ''}`;
   $('[data-next-src]', box)?.addEventListener('click', () => nextSource(ctx));
   $('#stage .stage-inner')?.append(box);
+  // Doğrudan kaynak hiç oynamadan hata verdiyse sıradakine kendiliğinden geç (en fazla 4 kez; döngü olmaz)
+  const at = ctx.index, p = player;
+  if (more && ctx.mode === 'player' && !(p?.video?.currentTime > 1) && (ctx.autoSkips || 0) < 4) {
+    ctx.autoSkips = (ctx.autoSkips || 0) + 1;
+    setTimeout(() => { if (player === p && ctx.mode === 'player' && ctx.index === at && ctx.v === routeId) { toast('Kaynak açılmadı, sıradakine geçiliyor'); nextSource(ctx); } }, 1800);
+  }
 }
 function destroyPlayer() {
   if (!player) return;
