@@ -5,7 +5,9 @@ import crypto from 'node:crypto';
 
 const app = express();
 const PORT = process.env.PORT || 3000;
-const TMDB_KEY = process.env.TMDB_API_KEY || '500330721680edb6d5f7f12ba7cd9023';
+const TMDB_KEY = process.env.TMDB_API_KEY;
+if (!TMDB_KEY) { console.error('[anthology-scraper] TMDB_API_KEY ortam değişkeni eksik — TMDB istekleri başarısız olacak'); }
+const ANIMECIX_TOKEN = process.env.ANIMECIX_TOKEN;
 const MIN = 60 * 1000;
 
 // ---- Simple LRU cache (girdi başına özel süre desteklenir) ----
@@ -73,6 +75,7 @@ function fromHint(kind, h) {
     : { name: h.title || h.original, original_name: h.original || h.title, first_air_date: date, external_ids: ext };
 }
 async function tmdbFetch(kind, id, external) {
+  if (!TMDB_KEY) throw new Error('TMDB_API_KEY ortam değişkeni eksik');
   const key = `${kind}:${id}:${external ? 'x' : ''}`;
   const hit = tmdbCache.get(key);
   if (hit) return hit;
@@ -281,10 +284,11 @@ app.get('/api/animecix', async (req, res) => {
 
     // 2. AnimeciX arama
     const searchUrl = `https://animecix.tv/secure/search/${encodeURIComponent(name)}?limit=10`;
+    if (!ANIMECIX_TOKEN) throw new Error('ANIMECIX_TOKEN ortam değişkeni eksik');
     const searchRes = await fetch(searchUrl, {
       signal: AbortSignal.timeout(10000),
       headers: {
-        'x-e-h': '7Y2ozlO+QysR5w9Q6Tupmtvl9jJp7ThFH8SB+Lo7NvZjgjqRSqOgcT2v4ISM9sP10LmnlYI8WQ==.xrlyOBFS5BHjQ2Lk',
+        'x-e-h': ANIMECIX_TOKEN,
         'Referer': 'https://animecix.tv/',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },
@@ -305,7 +309,7 @@ app.get('/api/animecix', async (req, res) => {
       signal: AbortSignal.timeout(10000),
       redirect: 'follow',
       headers: {
-        'x-e-h': '7Y2ozlO+QysR5w9Q6Tupmtvl9jJp7ThFH8SB+Lo7NvZjgjqRSqOgcT2v4ISM9sP10LmnlYI8WQ==.xrlyOBFS5BHjQ2Lk',
+        'x-e-h': ANIMECIX_TOKEN,
         'Referer': 'https://animecix.tv/',
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
       },

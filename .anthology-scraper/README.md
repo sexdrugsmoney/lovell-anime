@@ -11,8 +11,12 @@ Adım adım kılavuz: [`deploy/oracle/README.md`](../deploy/oracle/README.md).
 Render da hâlâ çalışır (Root directory: `.anthology-scraper`, Build: `npm install`, Start: `npm start`), ama ücretsiz
 planda 15 dakika boşta kalınca uyur ve ilk istek 30-60 saniye bekler.
 
-İsteğe bağlı ortam değişkenleri: `TMDB_API_KEY`, `FILMMAKINESI_SCRAPER_URL`, `STREMIO_ADDONS`, `ANTHOLOGY_LEGACY=1`,
+İsteğe bağlı ortam değişkenleri: `FILMMAKINESI_SCRAPER_URL`, `STREMIO_ADDONS`, `ANTHOLOGY_LEGACY=1`,
 `HOST` (ör. `127.0.0.1`; önünde ters vekil varken yalnızca yerel arayüzü dinler).
+
+**Zorunlu ortam değişkenleri:** `.env.example` dosyasını `.env` olarak kopyala ve doldur:
+- `TMDB_API_KEY` — https://www.themoviedb.org/settings/api adresinden alınır
+- `ANIMECIX_TOKEN` — AnimeciX x-e-h header token (AnimeciX endpoint'i çalışması için gerekli)
 
 ## API
 ```
