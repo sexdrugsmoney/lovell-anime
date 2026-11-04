@@ -37,7 +37,7 @@ jobs:
             const fs = require('fs');
             const path = require('path');
             fs.rmSync('dist', {recursive:true, force:true});
-            ['index.html', 'src/main.js', 'src/style.css', 'public'].forEach(rel => {
+            ['index.html', 'src', 'public'].forEach(rel => {
               const to = path.join('dist', rel);
               fs.mkdirSync(path.dirname(to), {recursive:true});
               fs.cpSync(rel, to, {recursive:true});

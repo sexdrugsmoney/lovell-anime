@@ -24,7 +24,7 @@ const copy = rel => {
   fs.mkdirSync(path.dirname(to), {recursive: true});
   fs.cpSync(from, to, {recursive: true});
 };
-['index.html', 'src/main.js', 'src/style.css', 'public'].forEach(copy);
+['index.html', 'src', 'public'].forEach(copy);
 console.log('  dist/ hazır');
 
 // 2) Giriş
