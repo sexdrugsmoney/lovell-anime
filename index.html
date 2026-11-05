@@ -4,9 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>LOVELL</title>
-<meta name="description" content="Anime, film ve dizileri keşfet, listeni tut, tek yerden izle.">
-<meta name="theme-color" content="#12152B">
-<link rel="icon" href="/public/mark.svg" type="image/svg+xml">
+<meta name="description" content="LOVELL araç kutusu: anime, film, dizi, Lovellify ve Speedfy klavye hız testi.">
+<meta name="theme-color" content="#090909">
+<link rel="icon" href="/public/mark.png" type="image/png">
 <link rel="manifest" href="/public/manifest.webmanifest">
 <link rel="apple-touch-icon" href="/public/apple-touch-icon.png">
 <meta name="apple-mobile-web-app-capable" content="yes">
@@ -15,23 +15,56 @@
 <meta name="apple-mobile-web-app-title" content="LOVELL">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="LOVELL">
-<meta property="og:title" content="LOVELL — Anime, film, dizi ve canlı TV">
-<meta property="og:description" content="Anime, film ve dizileri keşfet, listeni tut, canlı TV izle.">
+<meta property="og:title" content="LOVELL — Araç kutusu">
+<meta property="og:description" content="Anahtarla gir; izle, Lovellify veya Speedfy ile yazma hızını ölç.">
 <meta property="og:image" content="/public/icon-512.png">
 <meta name="twitter:card" content="summary">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,500..900&family=Onest:wght@400;500;600;700&display=swap">
-<script>try{const d=document.documentElement,t=localStorage.getItem('lovell.theme');if(t==='light'||t==='dark')d.dataset.theme=t;else if(t==='system'&&matchMedia('(prefers-color-scheme: light)').matches)d.dataset.theme='light';const s=JSON.parse(localStorage.getItem('lovell.tab')||'"anime"');d.dataset.section=s==='media'||s==='movies'?'media':'anime'}catch{document.documentElement.dataset.section='anime'}</script>
-<link rel="stylesheet" href="/src/style.css?v=19">
+<script>try{const d=document.documentElement,t=localStorage.getItem('lovell.theme');if(t==='kitty')d.dataset.theme='kitty';else if(t==='light'||t==='dark')d.dataset.theme=t;else if(t==='system'&&matchMedia('(prefers-color-scheme: light)').matches)d.dataset.theme='light';const acc=localStorage.getItem('lovell.accent');if(/^#[0-9A-Fa-f]{6}$/.test(acc||'')){d.style.setProperty('--user-accent',acc);d.dataset.accent='1'}const wall=localStorage.getItem('lovell.wall');if(wall&&(wall.startsWith('https://')||wall.startsWith('data:image/'))){d.style.setProperty('--user-wall','url("'+wall.replace(/"/g,'')+'")');d.dataset.wall='1'}const s=JSON.parse(localStorage.getItem('lovell.tab')||'"anime"');d.dataset.section=s==='media'||s==='movies'?'media':'anime';d.dataset.locked='1'}catch{document.documentElement.dataset.section='anime';document.documentElement.dataset.locked='1'}</script>
+<link rel="stylesheet" href="/src/style.css?v=57">
 </head>
 <body>
+<div id="nope" hidden>
+  <div class="entry-card">
+    <img class="brand-mark" src="/public/mark.png" alt="" width="48" height="48">
+    <h1>LOVELL</h1>
+    <p>aga öyle şeyler yapamazsın burda</p>
+  </div>
+</div>
+<script>
+(function () {
+  const wall = () => { const el = document.getElementById('nope'); if (el) el.hidden = false; };
+  addEventListener('keydown', e => {
+    const k = (e.key || '').toUpperCase();
+    const mod = e.ctrlKey || e.metaKey;
+    if (k === 'F12' || (mod && e.shiftKey && (k === 'I' || k === 'J' || k === 'C' || k === 'K')) || (mod && !e.shiftKey && k === 'U')) {
+      e.preventDefault();
+      e.stopPropagation();
+      wall();
+    }
+  }, true);
+})();
+</script>
+<div class="fx" aria-hidden="true"><i class="fx-orb fx-a"></i><i class="fx-orb fx-b"></i><i class="fx-grain"></i></div>
+<div class="entry" id="entry">
+  <form id="entry-form" class="entry-card">
+    <img class="brand-mark" src="/public/mark.png" alt="" width="48" height="48">
+    <h1>LOVELL</h1>
+    <p id="entry-text">Araç kutusuna girmek için anahtarını yaz.</p>
+    <label class="field">Anahtar<input name="key" autocomplete="off" spellcheck="false" autocapitalize="characters" required placeholder="XXXX-XXXX-XXXX-XXXX-XXXX"></label>
+    <button class="btn btn-play" type="submit">Giriş</button>
+    <p class="entry-err" id="entry-err"></p>
+  </form>
+</div>
 <a class="skip" href="#main">İçeriğe geç</a>
 <header class="top">
   <div class="top-inner">
-    <a class="logo" href="#/" aria-label="LOVELL ana sayfa">
-      <svg viewBox="0 0 212 56" aria-hidden="true"><g transform="skewX(-9) translate(8 0)"><g fill="currentColor"><path d="M0 6h10v34h16v10H0z"/><path d="M74 6h11l7 30 7-30h11l-12 44H86z"/><path d="M116 6h24v10h-14v7h11v10h-11v7h14v10h-24z"/><path d="M146 6h10v34h16v10h-26z"/><path d="M178 6h10v34h16v10h-26z"/></g><path class="logo-o" fill-rule="evenodd" d="M50 6a18 18 0 0 1 18 18v8a18 18 0 0 1-36 0v-8A18 18 0 0 1 50 6zM45 17v22l14-11z"/></g></svg>
+    <a class="logo" href="#/" aria-label="LOVELL araç kutusu">
+      <img class="brand-mark" src="/public/mark.png" alt="" width="32" height="32">
     </a>
+    <a class="hub-link" href="#/" title="Araç kutusu">Araçlar</a>
     <div class="tab-bar" role="tablist" aria-label="Bölüm">
       <span class="tab-glider" aria-hidden="true"></span>
       <button class="tab-btn active" role="tab" aria-selected="true" data-tab="anime" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5l1.9 4.6 4.9.4-3.7 3.2 1.1 4.8L10 13l-4.2 2.5 1.1-4.8-3.7-3.2 4.9-.4z"/></svg><span>Anime</span></button>
@@ -39,11 +72,10 @@
       <button class="tab-btn" role="tab" aria-selected="false" data-tab="livetv" type="button"><svg viewBox="0 0 20 20" aria-hidden="true"><rect x="2.5" y="5.5" width="15" height="10" rx="2"/><path class="ln" d="M7 2.5l3 3 3-3"/></svg><span>Canlı TV</span><i class="tab-live" aria-hidden="true"></i></button>
     </div>
     <nav class="nav" id="main-nav" aria-label="Ana menü">
-      <a href="#/" data-nav="home">Keşfet</a>
+      <a href="#/watch" data-nav="home">Keşfet</a>
       <a href="#/kesfet" data-nav="kesfet">Seriler</a>
       <a href="#/filmler" data-nav="filmler">Anime filmleri</a>
       <a href="#/listem" data-nav="listem">Listem<span class="count" id="list-count" hidden></span></a>
-      <a href="#/bilgisayarim" data-nav="bilgisayarim">Bilgisayarımda</a>
     </nav>
     <div class="top-actions">
       <button class="hamburger icon-btn" id="hamburger" type="button" aria-label="Menüyü aç" aria-expanded="false" aria-controls="main-nav">
@@ -53,6 +85,7 @@
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
         <span id="search-label">Ara</span><kbd>/</kbd>
       </button>
+      <a class="profile-chip" id="profile-chip" href="#/profil" title="Profil anahtarı" aria-label="Profil"><span class="avatar" data-c="0">?</span><span class="profile-name">Profil</span></a>
       <button class="icon-btn" id="settings-open" type="button" aria-label="Ayarlar" title="Ayarlar" aria-haspopup="dialog">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
       </button>
@@ -63,33 +96,51 @@
   </div>
 </header>
 
+<aside class="side" id="side">
+  <div class="side-head">
+    <a class="side-brand" href="#/" aria-label="Araç kutusu"><img class="brand-mark" src="/public/mark.png" alt="" width="28" height="28"><span>LOVELL</span></a>
+    <button class="side-toggle" id="side-toggle" type="button" aria-expanded="true" aria-label="Menüyü daralt"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6 9 12l6 6"/></svg></button>
+  </div>
+  <nav class="side-nav" aria-label="İzleme">
+    <a href="#/watch" data-side-nav="home"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="m10 9 6 3-6 3z"/></svg><span>Keşfet</span></a>
+    <a href="#/kesfet" data-side-nav="kesfet"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M8 9v6l5-3z"/></svg><span>Seriler</span></a>
+    <a href="#/filmler" data-side-nav="filmler"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 6v12M12 6v12M17 6v12M3 10h18M3 14h18"/></svg><span>Filmler</span></a>
+    <a href="#/listem" data-side-nav="listem"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 4h10a1 1 0 0 1 1 1v15l-6-3-6 3V5a1 1 0 0 1 1-1z"/></svg><span>Listem</span></a>
+    <a href="#/"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span>Araçlar</span></a>
+  </nav>
+  <div class="side-tabs" role="tablist" aria-label="Bölüm">
+    <button class="tab-btn" type="button" data-tab="anime"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 2.2 5.2L20 9l-4 3.6L17.2 18 12 15.2 6.8 18 8 12.6 4 9l5.8-.8z"/></svg><span>Anime</span></button>
+    <button class="tab-btn" type="button" data-tab="media"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="12" rx="2"/><path d="M8 7V5h8v2"/></svg><span>Film &amp; Dizi</span></button>
+    <button class="tab-btn" type="button" data-tab="livetv"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="2"/><circle cx="12" cy="12" r="2"/></svg><span>Canlı</span></button>
+  </div>
+</aside>
+
 <main id="main" tabindex="-1"></main>
 
 <footer class="foot">
   <div class="foot-inner">
     <div class="foot-top">
       <div class="foot-about">
-        <p class="foot-brand"><img src="/public/mark.svg" alt="" width="32" height="32"> LOVELL</p>
-        <p class="foot-tag">Anime, film, dizi ve canlı TV'yi tek yerde keşfet, listeni tut, kaldığın yerden devam et.</p>
+        <p class="foot-brand"><img class="brand-mark" src="/public/mark.png" alt="" width="32" height="32"> LOVELL</p>
+        <p class="foot-tag">Anime, film, dizi, manga, müzik ve hız testini tek anahtarla aç.</p>
       </div>
       <nav class="foot-links" aria-label="Alt bağlantılar">
-        <div><h3>Keşfet</h3><a href="#/" data-foot-tab="anime">Anime</a><a href="#/" data-foot-tab="media">Film &amp; Dizi</a><a href="#/canli">Canlı TV</a></div>
-        <div><h3>Kitaplık</h3><a href="#/listem">Listem</a><a href="#/listem?g=gecmis">İzleme geçmişi</a><a href="#/bilgisayarim" data-nav-local>Bilgisayarımda</a></div>
+        <div><h3>Araçlar</h3><a href="#/">Araç kutusu</a><a href="#/watch">İzle</a><a href="#/lovellify">Lovellify</a><a href="#/speedfy">Speedfy</a><a href="#/readfy">Readfy</a><a href="#/tavsiye">TavsiyerVerKnk</a></div>
+        <div><h3>Keşfet</h3><a href="#/watch" data-foot-tab="anime">Anime</a><a href="#/watch" data-foot-tab="media">Film &amp; Dizi</a><a href="#/canli">Canlı TV</a></div>
+        <div><h3>Kitaplık</h3><a href="#/listem">İzleyeceklerim</a><a href="#/listem?g=gecmis">İzleme geçmişi</a><a href="#/profil">Profil</a></div>
         <div><h3>Yardım</h3><button type="button" class="foot-btn" data-open-settings>Ayarlar</button><button type="button" class="foot-btn" data-open-keys>Klavye kısayolları</button></div>
       </nav>
-    </div>
-    <div class="foot-bottom">
-      <p><span id="foot-section"></span> Yayın platformu bilgileri JustWatch'tan gelir. Bu site TMDB API'sini kullanır ancak TMDB tarafından onaylanmış değildir.</p>
-      <p class="foot-status" id="data-status"></p>
     </div>
   </div>
 </footer>
 
 <dialog class="search" id="search-dialog" aria-label="Anime ara">
   <div class="search-box">
-    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
-    <input id="search-input" type="search" placeholder="Anime adı yaz" autocomplete="off" spellcheck="false" aria-controls="search-results">
-    <button class="text-btn" type="button" id="search-close">Kapat</button>
+    <label class="search-field">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg>
+      <input id="search-input" type="search" placeholder="Anime adı yaz" autocomplete="off" spellcheck="false" aria-controls="search-results">
+    </label>
+    <button class="search-close" type="button" id="search-close">Kapat</button>
   </div>
   <div class="search-results" id="search-results" role="listbox"></div>
 </dialog>
@@ -101,6 +152,6 @@
 
 <nav class="bottom-nav" id="bottom-nav" aria-label="Alt menü"></nav>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
-<script type="module" src="/src/main.js?v=19"></script>
+<script type="module" src="/src/main.js?v=57"></script>
 </body>
 </html>

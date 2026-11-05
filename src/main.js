@@ -1,7 +1,32 @@
+import {externalWatchSites} from './data/external-watch-sites.js';
 // LOVELL istemci uygulaması
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+function normTitle(value) {
+  return String(value || '').toLocaleLowerCase('en').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/&/g, ' and ').replace(/[^a-z0-9]+/g, ' ').replace(/\b(the|a|an|season|sezon|part|cour|tv|ova|ona|movie|film)\b/g, ' ').replace(/\s+/g, ' ').trim();
+}
+function looseTitle(value) { return String(value || '').toLocaleLowerCase('en').replace(/[^\p{L}\p{N}]+/gu, ''); }
+function titleHit(query, candidate) {
+  const a = normTitle(query), b = normTitle(candidate);
+  if (a.length >= 4 && b.length >= 4) {
+    if (a === b) return true;
+    const short = a.length <= b.length ? a : b, long = a.length <= b.length ? b : a;
+    if (short.length >= 8 && long.startsWith(`${short} `)) return true;
+  }
+  const c = looseTitle(query), d = looseTitle(candidate);
+  if (c.length < 2 || d.length < 2) return false;
+  if (c === d) return true;
+  const short = c.length <= d.length ? c : d, long = c.length <= d.length ? d : c;
+  return short.length >= 6 && long.startsWith(short);
+}
+function pickHit(query, items, titleOf, altsOf) {
+  for (const item of items || []) {
+    const names = [titleOf(item), ...(altsOf(item) || [])];
+    if (names.some(name => titleHit(query, name))) return item;
+  }
+  return null;
+}
 const main = $('#main');
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
@@ -17,6 +42,170 @@ const secOf = a => a?.section === 'media' ? 'media' : 'anime';
 let myList = store.get('list', []);
 let progress = store.get('progress', {});   // "kind:id:s:e" -> {t, d, at}
 let recent = store.get('recent', {});       // "kind:id" -> {item, s, e, at}
+let profileKey = store.get('profileKey', '') || '';
+let profile = store.get('profileMeta', null);
+let syncBase = store.get('syncBase', 0);
+let profileReady = !profileKey;
+let syncTimer = 0;
+let syncing = false;
+let syncAgain = false;
+
+function persistUser() {
+  store.set('list', myList);
+  store.set('progress', progress);
+  store.set('recent', recent);
+}
+function metaOf(p) {
+  return p ? {name: p.name, color: p.color, avatar: p.avatar || '', prefs: p.prefs && typeof p.prefs === 'object' ? p.prefs : {}, createdAt: p.createdAt, updatedAt: p.updatedAt} : null;
+}
+function avatarMarkup(p, large) {
+  const letter = (p?.name || '?').slice(0, 1).toLocaleUpperCase('tr');
+  const c = Number.isInteger(p?.color) ? p.color : (Number(p?.color) || 0);
+  const img = p?.avatar ? `<img src="${esc(p.avatar)}" alt="">` : esc(letter);
+  return `<span class="avatar${large ? ' avatar-lg' : ''}" data-c="${c}">${img}</span>`;
+}
+function mergeLists(primary, extra) {
+  const seen = new Set();
+  const out = [];
+  for (const a of [...(primary || []), ...(extra || [])]) {
+    if (!a) continue;
+    const k = keyOf(a);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(a);
+  }
+  return out.slice(0, 400);
+}
+function mergeProgress(local, remote) {
+  const out = {...(remote || {}), ...(local || {})};
+  for (const [k, stamp] of Object.entries(remote || {})) if ((stamp?.at || 0) > (out[k]?.at || 0)) out[k] = stamp;
+  return out;
+}
+function mergeRecent(local, remote) {
+  const out = {...(remote || {}), ...(local || {})};
+  for (const [k, row] of Object.entries(remote || {})) if ((row?.at || 0) > (out[k]?.at || 0)) out[k] = row;
+  return out;
+}
+function paintProfile() {
+  const chip = $('#profile-chip');
+  if (!chip) return;
+  const name = profile?.name || '';
+  const on = !!profileKey;
+  chip.classList.toggle('on', on);
+  chip.title = on ? `${name} profili` : 'Profil anahtarı';
+  chip.setAttribute('aria-label', on ? `${name} profili` : 'Profil');
+  chip.innerHTML = `${avatarMarkup(profile)}<span class="profile-name">${esc(on ? name : 'Profil')}</span>`;
+}
+async function apiSend(path, method, body, key = profileKey) {
+  const headers = {'accept': 'application/json'};
+  if (body != null) headers['content-type'] = 'application/json';
+  if (key) headers['x-lovell-key'] = key;
+  const res = await fetch(path, {method, headers, body: body == null ? undefined : JSON.stringify(body)});
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new Error(data.error || 'İstek başarısız');
+    err.status = res.status;
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+function applyRemote(remote) {
+  myList = Array.isArray(remote.list) ? remote.list : [];
+  progress = remote.progress && typeof remote.progress === 'object' ? remote.progress : {};
+  recent = remote.recent && typeof remote.recent === 'object' ? remote.recent : {};
+  persistUser();
+  profile = metaOf(remote);
+  syncBase = remote.updatedAt || 0;
+  store.set('profileMeta', profile);
+  store.set('syncBase', syncBase);
+  store.set('syncDirty', false);
+  applyPrefs(profile?.prefs);
+  paintProfile();
+  updateCount();
+  if (typeof syncBottomNav === 'function') syncBottomNav();
+}
+async function pushOnce(attempt = 0) {
+  const body = {base: syncBase, name: profile?.name, color: profile?.color, avatar: profile?.avatar ?? '', prefs: profile?.prefs || skinPrefs(), list: myList, progress, recent};
+  try {
+    const saved = await apiSend('/api/profile', 'PUT', body);
+    syncBase = saved.updatedAt;
+    profile = metaOf(saved);
+    store.set('syncBase', syncBase);
+    store.set('profileMeta', profile);
+    store.set('syncDirty', false);
+    paintProfile();
+  } catch (e) {
+    if (e.status === 409 && e.data?.profile && attempt < 3) {
+      const remote = e.data.profile;
+      myList = mergeLists(myList, remote.list);
+      progress = mergeProgress(progress, remote.progress);
+      recent = mergeRecent(recent, remote.recent);
+      persistUser();
+      syncBase = remote.updatedAt;
+      const keep = {name: profile?.name, avatar: profile?.avatar, color: profile?.color};
+      profile = metaOf(remote);
+      if (keep.name) profile.name = keep.name;
+      if (typeof keep.avatar === 'string') profile.avatar = keep.avatar;
+      if (Number.isInteger(keep.color) && keep.color >= 0 && keep.color <= 7) profile.color = keep.color;
+      store.set('profileMeta', profile);
+      store.set('syncDirty', true);
+      return pushOnce(attempt + 1);
+    }
+    throw e;
+  }
+}
+async function runSync() {
+  if (!profileKey || !profileReady) return;
+  if (syncing) { syncAgain = true; return; }
+  syncing = true;
+  try {
+    do {
+      syncAgain = false;
+      await pushOnce();
+    } while (syncAgain);
+  } catch {}
+  finally { syncing = false; }
+}
+function scheduleSync() {
+  if (!profileKey) return;
+  store.set('syncDirty', true);
+  if (!profileReady) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(runSync, 450);
+}
+async function loadProfile() {
+  paintProfile();
+  if (!profileKey) { profileReady = true; return; }
+  try {
+    const remote = await apiSend('/api/profile', 'GET');
+    if (store.get('syncDirty', false)) {
+      myList = mergeLists(myList, remote.list);
+      progress = mergeProgress(progress, remote.progress);
+      recent = mergeRecent(recent, remote.recent);
+      persistUser();
+      syncBase = remote.updatedAt;
+      profile = metaOf(remote);
+      store.set('profileMeta', profile);
+      profileReady = true;
+      await runSync();
+      updateCount();
+    } else applyRemote(remote);
+  } catch (e) {
+    if (e.status === 401) {
+      profileKey = '';
+      profile = null;
+      store.set('profileKey', '');
+      store.set('profileMeta', null);
+      paintProfile();
+      toast('Kayıtlı profil anahtarı geçersiz', 'error');
+    }
+  } finally { profileReady = true; }
+}
+function validProfileKey(raw) {
+  const compact = String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  return /^[ABCDEFGHJKLMNPQRSTUVWXYZ23456789]{20}$/.test(compact) ? compact.match(/.{4}/g).join('-') : '';
+}
 let CLOUD = false;                          // Cloudflare Workers sürümü: yerel dosya yok
 let SUBS_ON = false;                        // sunucuda Türkçe altyazı servisi (Wyzie) açık mı
 let library = new Set();                    // "kind:id" anahtarları (bilgisayardaki dosyalar)
@@ -28,10 +217,11 @@ function toggleList(a, {quiet = false} = {}) {
   const at = myList.findIndex(x => keyOf(x) === keyOf(a));
   myList = had ? myList.filter(x => keyOf(x) !== keyOf(a)) : [slim(a), ...myList];
   store.set('list', myList);
+  scheduleSync();
   updateCount();
   syncBottomNav();
   syncListButtons(a);
-  if (!quiet) toast(had ? 'Listeden çıkarıldı' : 'Listeye eklendi', had ? 'info' : 'success', had ? {label: 'Geri al', fn: () => { if (!inList(a)) { myList.splice(Math.max(0, at), 0, slim(a)); store.set('list', myList); updateCount(); syncListButtons(a); if (/^#\/listem/.test(location.hash)) route(); } }} : null);
+  if (!quiet) toast(had ? 'Listeden çıkarıldı' : 'İzleyeceklerime eklendi', had ? 'info' : 'success', had ? {label: 'Geri al', fn: () => { if (!inList(a)) { myList.splice(Math.max(0, at), 0, slim(a)); store.set('list', myList); scheduleSync(); updateCount(); syncListButtons(a); if (/^#\/listem/.test(location.hash)) route(); } }} : null);
   return !had;
 }
 // Sayfadaki tüm "listeye ekle" düğmelerini (kartlar, vitrin, detay penceresi) aynı anda günceller.
@@ -78,7 +268,6 @@ function setSection(next) {
   if (si) si.placeholder = S().placeholder;
   $('#search-dialog')?.setAttribute('aria-label', S().search);
   $('meta[name="theme-color"]')?.setAttribute('content', S().color);
-  $('#foot-section') && ($('#foot-section').textContent = section === 'anime' ? 'Anime bilgileri TMDB ve AniList’ten gelir.' : 'Film ve dizi bilgileri TMDB’den gelir.');
   updateCount();
   if (typeof syncBottomNav === 'function') syncBottomNav();
 }
@@ -116,24 +305,7 @@ function pageEnter() {
   if (reduceMotion || !main.animate) return;
   main.animate([{opacity: 0, transform: 'translateY(10px)'}, {opacity: 1, transform: 'none'}], {duration: 320, easing: 'cubic-bezier(.2,.7,.2,1)'});
 }
-// Afişlere 3B eğim + parıltı (yalnızca fareyle).
-if (!reduceMotion && matchMedia('(hover: hover) and (pointer: fine)').matches) {
-  let tilted = null;
-  const reset = el => { if (el) { el.style.removeProperty('--rx'); el.style.removeProperty('--ry'); el.classList.remove('tilting'); } };
-  document.addEventListener('pointermove', e => {
-    const img = e.target.closest?.('.card .card-img, .rank .card-img, .hero-poster');
-    if (img !== tilted) { reset(tilted); tilted = img; }
-    if (!img) return;
-    const r = img.getBoundingClientRect();
-    const px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
-    img.classList.add('tilting');
-    img.style.setProperty('--rx', ((0.5 - py) * 10).toFixed(2) + 'deg');
-    img.style.setProperty('--ry', ((px - 0.5) * 12).toFixed(2) + 'deg');
-    img.style.setProperty('--gx', (px * 100).toFixed(1) + '%');
-    img.style.setProperty('--gy', (py * 100).toFixed(1) + '%');
-  }, {passive: true});
-  document.addEventListener('pointerleave', () => { reset(tilted); tilted = null; });
-}
+// Afiş eğimi kapatıldı: sürekli pointermove kart ızgarasını kilitliyordu.
 // Düğmelerde tıklama dalgası.
 document.addEventListener('pointerdown', e => {
   const b = e.target.closest?.('.btn, .tab-btn, .chip, .cat-btn, .kind-switch a');
@@ -153,6 +325,7 @@ function saveProgress(a, s, e, t, d) {
   recent[keyOf(a)] = {item: slim(a), s, e, at: Date.now()};
   store.set('progress', progress);
   store.set('recent', recent);
+  scheduleSync();
 }
 
 // ---------------- Yardımcılar ----------------
@@ -206,7 +379,8 @@ const prefetch = path => api(path, 20000, {quiet: true}).catch(() => {});
 async function apiFetch(path, timeout, ttl) {
   const r = await fetch(path, {signal: AbortSignal.timeout(timeout)});
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw Object.assign(Error(data.error || `HTTP ${r.status}`), {data});
+  if (r.status === 401) { profileKey = ''; store.set('profileKey', ''); document.documentElement.dataset.locked = '1'; }
+  if (!r.ok) throw Object.assign(Error(data.error || `HTTP ${r.status}`), {data, status: r.status});
   if (ttl) {
     if (apiCache.size >= 200) {
       // LRU basit: en eski girişi sil
@@ -265,9 +439,8 @@ const remember = a => (a && ITEMS.set(keyOf(a), a), a);
 const quickActs = (a, cls = '') => `<span class="qa ${cls}"><span class="qa-btn ${inList(a) ? 'on' : ''}" role="button" tabindex="-1" data-list="${keyOf(a)}" aria-pressed="${inList(a)}" aria-label="${inList(a) ? 'Listeden çıkar' : 'Listeye ekle'}">${inList(a) ? CHECK : PLUS}</span><span class="qa-btn" role="button" tabindex="-1" data-info="${keyOf(a)}" aria-label="Ayrıntılar">${INFO}</span></span>`;
 function card(a) {
   remember(a);
-  const local = library.has(keyOf(a));
   return `<a class="card" href="${watchHref(a)}">
-    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${local ? '<span class="flag" title="Bilgisayarında video dosyası var">Dosyan var</span>' : ''}${a.score ? `<span class="card-score">${STAR}${score(a.score)}</span>` : ''}<span class="card-hover">${PLAY}</span>${quickActs(a)}</span>
+    <span class="card-img">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="card-ph">${esc(a.title)}</span>${a.score ? `<span class="card-score">${STAR}${score(a.score)}</span>` : ''}<span class="card-sheet"><b>${esc(a.title)}</b><small>${[a.year, kindLabel(a)].filter(Boolean).map(esc).join(' · ')}</small></span><span class="card-hover">${PLAY}</span>${quickActs(a)}</span>
     <span class="card-title">${esc(a.title)}</span>
     <span class="card-meta"><span>${esc(a.year || '')}</span><span class="kind">${kindLabel(a)}</span></span>
   </a>`;
@@ -459,7 +632,7 @@ async function viewHome(v) {
 }
 let genres = [];
 // Tür kutucukları: her türün kendi renk tonu var (bölüm temasıyla karışır).
-const GENRE_HUE = {aksiyon: 4, macera: 28, komedi: 48, dram: 330, fantastik: 270, 'bilim-kurgu': 200, gizem: 250, romantik: 340, korku: 0, spor: 140, 'gunluk-yasam': 95, dogaustu: 290, suc: 15, gerilim: 355, animasyon: 175, belgesel: 120, aile: 60, savas: 30, tarih: 38, western: 24};
+const GENRE_HUE = {aksiyon: 4, macera: 28, komedi: 48, dram: 330, fantastik: 270, 'bilim-kurgu': 200, gizem: 250, romantik: 340, korku: 0, spor: 140, 'gunluk-yasam': 95, dogaustu: 290, suc: 15, gerilim: 355, animasyon: 175, belgesel: 120, aile: 60, savas: 30, tarih: 38, western: 24, mecha: 210, psikolojik: 265, muzik: 300, isekai: 160, shounen: 12, seinen: 220};
 function genreLinks() {
   if (!genres.length) return '';
   const target = g => section === 'media' && !g.tv ? '#/filmler' : '#/kesfet';
@@ -585,8 +758,9 @@ function viewList(v, params = new URLSearchParams()) {
   if (cmp) mine.sort(cmp);
   const others = myList.length - mine.length;
   const otherName = SECTIONS[section === 'anime' ? 'media' : 'anime'].label;
-  main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${esc(S().label)}</p><h1>Listem</h1></div>${libTabs('list')}${mine.length ? `<div class="head-tools"><label class="select">Sırala <select id="list-sort">${LIST_SORTS.map(([k, t]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${t}</option>`).join('')}</select></label><button class="btn btn-ghost btn-sm" id="shuffle" type="button">${SHUFFLE}Rastgele seç</button></div><p>${mine.length} başlık. Liste bu tarayıcıda saklanır; Ayarlar'dan dışa aktarıp başka cihaza taşıyabilirsin.${others ? ` ${otherName} listende ${others} başlık daha var.` : ''}</p>` : ''}</header>
-    ${mine.length ? listGroups(mine) : emptyState({icon: 'list', title: 'Listen henüz boş', text: `${S().empty}${others ? ` ${otherName} listende ${others} başlık var.` : ''}`, actions: `<a class="btn btn-play" href="#/kesfet">${section === 'anime' ? 'Serilere göz at' : 'Dizilere göz at'}</a><a class="btn btn-ghost" href="#/filmler">Filmlere göz at</a>`}) + '<div id="suggest"></div>'}
+  const who = profileKey ? `${esc(profile?.name || 'Profil')} profilinin izleyeceklerim listesi. Aynı anahtarla başka cihazda da açılır.` : `Bu liste şimdilik yalnızca bu tarayıcıda. Sana verilen anahtarı <a class="text-btn" href="#/profil">buraya</a> yazarsan her cihazda aynı liste durur.`;
+  main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${profileKey ? esc(profile?.name || 'Profil') : esc(S().label)}</p><h1>İzleyeceklerim</h1></div>${libTabs('list')}${mine.length ? `<div class="head-tools"><label class="select">Sırala <select id="list-sort">${LIST_SORTS.map(([k, t]) => `<option value="${k}" ${k === sortBy ? 'selected' : ''}>${t}</option>`).join('')}</select></label><button class="btn btn-ghost btn-sm" id="shuffle" type="button">${SHUFFLE}Rastgele seç</button></div><p>${mine.length} başlık. ${who}${others ? ` ${otherName} listende ${others} başlık daha var.` : ''}</p>` : ''}</header>
+    ${mine.length ? listGroups(mine) : emptyState({icon: 'list', title: 'İzleyeceklerim boş', text: `${S().empty}${profileKey ? '' : ' Anahtarın varsa profiline gir; liste orada durur.'}${others ? ` ${otherName} listende ${others} başlık var.` : ''}`, actions: `<a class="btn btn-play" href="#/kesfet">${section === 'anime' ? 'Serilere göz at' : 'Dizilere göz at'}</a><a class="btn btn-ghost" href="#/filmler">Filmlere göz at</a>${profileKey ? '' : '<a class="btn btn-ghost" href="#/profil">Anahtarımı gir</a>'}`}) + '<div id="suggest"></div>'}
   </div>`;
   if ($('#list-sort')) $('#list-sort').onchange = e => { store.set('listSort', e.target.value); viewList(v, params); };
   bindShuffle();
@@ -613,7 +787,7 @@ function viewHistory(v) {
   const buckets = [['Bugün', start], ['Dün', start - day], ['Bu hafta', start - 6 * day], ['Bu ay', start - 29 * day], ['Daha önce', -Infinity]];
   const groups = buckets.map(([t, from], i) => [t, items.filter(r => r.at >= from && (i === 0 || r.at < buckets[i - 1][1]))]).filter(([, l]) => l.length);
   main.innerHTML = `<div class="page tab-content-enter"><header class="page-head"><div><p class="eyebrow">${esc(S().label)}</p><h1>İzleme geçmişi</h1></div>${libTabs('history')}${items.length ? `<div class="head-tools"><button class="btn btn-ghost btn-sm" id="clear-history" type="button"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5V3h3v1.5M4.5 4.5l.6 8.5h5.8l.6-8.5"/></svg>Geçmişi temizle</button></div><p>${items.length} başlık. Bir kartın üzerindeki çarpıyla tek tek de kaldırabilirsin.</p>` : ''}</header>
-    ${items.length ? groups.map(([t, l]) => `<section class="list-group"><h2 class="list-group-head">${t}<small>${l.length}</small></h2><div class="grid grid-wide">${l.map(r => wideCard(r, {ago: true})).join('')}</div></section>`).join('') : emptyState({icon: 'history', title: 'Henüz bir şey izlemedin', text: 'İzlemeye başladığın bölümler ve filmler burada, kaldığın yerle birlikte görünür.', actions: '<a class="btn btn-play" href="#/">Keşfetmeye başla</a>'}) + '<div id="suggest"></div>'}
+    ${items.length ? groups.map(([t, l]) => `<section class="list-group"><h2 class="list-group-head">${t}<small>${l.length}</small></h2><div class="grid grid-wide">${l.map(r => wideCard(r, {ago: true})).join('')}</div></section>`).join('') : emptyState({icon: 'history', title: 'Henüz bir şey izlemedin', text: 'İzlemeye başladığın bölümler ve filmler burada, kaldığın yerle birlikte görünür.', actions: '<a class="btn btn-play" href="#/watch">Keşfetmeye başla</a>'}) + '<div id="suggest"></div>'}
   </div>`;
   $('#clear-history')?.addEventListener('click', () => clearHistory());
   imgFallback(); observeCards();
@@ -627,7 +801,8 @@ function clearHistory(all = false) {
   gone.forEach(k => delete recent[k]);
   Object.keys(progress).forEach(k => { if (all || gone.has(k.split(':').slice(0, 2).join(':'))) delete progress[k]; });
   store.set('recent', recent); store.set('progress', progress);
-  toast('İzleme geçmişi temizlendi', 'info', {label: 'Geri al', fn: () => { recent = backup.recent; progress = backup.progress; store.set('recent', recent); store.set('progress', progress); route(); }});
+  scheduleSync();
+  toast('İzleme geçmişi temizlendi', 'info', {label: 'Geri al', fn: () => { recent = backup.recent; progress = backup.progress; store.set('recent', recent); store.set('progress', progress); scheduleSync(); route(); }});
   if (!location.hash || /^#\/(listem)?(\?|$)/.test(location.hash)) route();
 }
 
@@ -676,8 +851,11 @@ function watchSkeleton(seed) {
       <div class="stage"><div class="stage-inner stage-skel">${bg ? `<img class="stage-bg" src="${esc(bg)}" alt="" data-fb>` : ''}${loading(section === 'anime' ? 'Anime bilgileri yükleniyor' : 'Bilgiler yükleniyor')}</div></div>
       <aside class="cinema-panel skel-panel" aria-hidden="true">${Array.from({length: 7}, () => '<span class="skeleton sk-ep"></span>').join('')}</aside>
     </div>
-    <div class="page"><div class="watch-grid"><div class="info">${line('30%', 14, 0)}${seed?.title ? `<h1 class="title" style="margin-top:10px">${esc(seed.title)}</h1>` : line('62%', 60, 10)}${line('46%', 16, 22)}${line('92%', 14, 22)}${line('84%')}${line('70%')}<div class="actions" style="margin-top:26px">${line('150px', 44, 0)}${line('120px', 44, 0)}</div></div>${line('100%', 230, 0)}</div></div>
+    <div class="page"><div class="watch-grid"><div class="info">${line('30%', 14, 0)}${seed?.title ? `<h1 class="title" style="margin-top:10px">${esc(seed.title)}</h1>` : line('62%', 60, 10)}${line('46%', 16, 22)}${line('92%', 14, 22)}${line('84%')}${line('70%')}<div class="actions" style="margin-top:26px">${line('150px', 44, 0)}${line('120px', 44, 0)}</div></div></div></div>
   </div>`;
+}
+function externalWatchLinks(a) {
+ return externalWatchSites(a).map(s => `<div class="source-help external-watch-site"><div><b>Kaynak sitenin oynatıcısı</b><p>${esc(s.language)} Bu bağlantı yeni sekmede açılır; Lovell içinde oynatılmaz.</p><a class="btn btn-sm btn-ghost" href="${esc(s.url)}" target="_blank" rel="noopener noreferrer">${esc(s.site)} · Kaynak sitede aç ↗</a></div></div>`).join('');
 }
 async function viewWatch(v, kind, id, params) {
   main.innerHTML = watchSkeleton(ITEMS.get(`${kind}:${id}`) || myList.find(x => keyOf(x) === `${kind}:${id}`) || recent[`${kind}:${id}`]?.item);
@@ -713,17 +891,28 @@ async function viewWatch(v, kind, id, params) {
         <ol class="ep-list cinema-ep-list" id="ep-list">${loading('Bölümler yükleniyor')}</ol>
       </aside>`}
     </div>
+    <div class="watch-tools" id="watch-tools">
+      <div class="watch-jump" id="watch-jump"></div>
+      <div class="stream-audio" id="audio-toggle" role="group" aria-label="Ses">
+        <button type="button" data-audio="dub">Türkçe Dublaj</button>
+        <button type="button" data-audio="sub">Altyazılı</button>
+      </div>
+    </div>
+    <p class="page note" id="language-status" role="status">Dil bilgisi aranıyor…</p>
+    ${movie ? '' : '<div class="ep-strip" id="ep-strip" hidden></div>'}
     <div class="page">
       <div class="watch-grid">
         <div class="info">
           <p class="now" id="now"></p>
           <h1 class="title">${esc(a.title)}</h1>
+          ${externalWatchLinks(a)}
           ${a.original && a.original !== a.title ? `<p class="original" ${section === 'anime' ? 'lang="ja"' : ''}>${esc(a.original)}</p>` : ''}
           <p class="facts">${a.score ? `<span class="score">${STAR}${score(a.score)}</span>` : ''}${a.imdbRating ? `<span class="imdb-score" title="IMDb puanı"><svg viewBox="0 0 32 16" width="32" height="16" aria-hidden="true"><rect width="32" height="16" rx="3" fill="#F5C518"/><text x="4" y="12" font-size="10" font-weight="bold" fill="#000">IMDb</text></svg> ${esc(a.imdbRating)}</span>` : ''}${a.rottenTomatoes ? `<span title="Rotten Tomatoes" class="badge-rt"><b>RT</b>${esc(a.rottenTomatoes)}</span>` : ''}${a.metascore ? `<span title="Metascore" class="metascore">${esc(a.metascore)}</span>` : ''}${a.awards ? `<span title="${esc(a.awards)}" class="awards-badge"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 2h8v3a4 4 0 0 1-8 0zM4 3H2v1a2 2 0 0 0 2 2M12 3h2v1a2 2 0 0 1-2 2M8 9v3M5 14h6"/></svg>Ödüllü</span>` : ''}${a.boxOffice ? `<span title="Gişe" class="badge-box">Gişe ${esc(a.boxOffice)}</span>` : ''}${a.year ? `<span>${esc(a.year)}</span>` : ''}${movie ? `<span>Film${a.runtime ? `, ${a.runtime} dk` : ''}</span>` : a.episodeCount ? `<span>${a.episodeCount} bölüm</span>` : ''}${a.genres?.length ? `<span>${esc(a.genres.join(', '))}</span>` : ''}${a.studios?.length ? `<span>${esc(a.studios.join(', '))}</span>` : ''}${STATUS_TR[a.status] ? `<span class="status-pill ${STATUS_TR[a.status][1]}">${STATUS_TR[a.status][0]}</span>` : ''}</p>
           ${a.tagline ? `<p class="tagline">“${esc(a.tagline)}”</p>` : ''}
           ${!movie && a.nextEpisode && daysUntil(a.nextEpisode.date) >= 0 ? `<p class="next-air">${CAL}<span><b>Yeni bölüm ${whenLabel(a.nextEpisode.date)}</b>${a.nextEpisode.s}. sezon ${a.nextEpisode.e}. bölüm · ${fmtDate(a.nextEpisode.date)}</span></p>` : ''}
           ${a.overview ? `<div class="overview" id="overview"><p>${esc(a.overview).replace(/\n+/g, '</p><p>')}</p></div>${a.overviewLang === 'en' ? '<p class="note">Türkçe özet bulunamadı, İngilizcesi gösteriliyor.</p>' : ''}` : ''}
           ${movie ? '' : '<div class="ep-nav" id="ep-nav" hidden></div>'}
+          <div id="title-bridge"></div>
           <div class="actions">
             <button class="btn ${inList(a) ? 'btn-ghost' : ''}" id="save">${inList(a) ? CHECK + 'Listende' : PLUS + 'Listeye ekle'}</button>
             ${a.trailer ? `<button class="btn btn-ghost" id="trailer">${PLAY}Fragman</button>` : ''}
@@ -731,7 +920,6 @@ async function viewWatch(v, kind, id, params) {
             <button class="btn btn-ghost btn-icon" id="share" type="button" aria-label="Paylaş" title="Bağlantıyı paylaş">${SHARE}</button>
           </div>
         </div>
-        ${whereToWatch(a)}
       </div>
       ${castShelf(a)}
       ${shelf({title: section === 'anime' ? 'Bunu sevenler bunlara da baktı' : 'Benzer içerikler', items: a.recommendations || []})}
@@ -746,26 +934,70 @@ async function viewWatch(v, kind, id, params) {
   syncSeen(ctx);
   if ($('#season')) $('#season').onchange = ev => go(ctx, Number(ev.target.value), 1);
   bindWatchExtras(ctx);
+  updateEpNav(ctx);
   bindShelves();
   imgFallback();
   setStatus(a.source);
   if (!movie) loadEpisodes(ctx);
   loadSources(ctx);
+  if (a.section === 'anime') loadMangaBridge(a);
 }
 
-function whereToWatch(a) {
-  const p = a.providers;
-  const groups = p ? [['Abonelikle', p.stream], ['Ücretsiz', p.free], ['Kirala', p.rent], ['Satın al', p.buy]].filter(([, l]) => l?.length) : [];
-  const links = a.links || [];
-  const tmdbWatch = ['tv', 'movie'].includes(a.kind) ? `https://www.themoviedb.org/${a.kind}/${encodeURIComponent(a.id)}/watch?locale=TR` : null;
-  const providerLink = p?.link || tmdbWatch;
-  const body = groups.length || links.length
-    ? `${groups.map(([t, l]) => `<div class="prov-group"><h3>${t}</h3><ul class="prov">${l.map(x => `<li><a href="${esc(p.link)}" target="_blank" rel="noopener noreferrer">${x.logo ? `<img src="${esc(x.logo)}" alt="" width="36" height="36" loading="lazy" decoding="async" data-fb>` : ''}<span>${esc(x.name)}</span></a></li>`).join('')}</ul></div>`).join('')}
-       ${links.length ? `<div class="prov-group"><h3>Resmî yayın sayfaları</h3><ul class="links">${links.map(l => `<li><a href="${esc(l.url)}" target="_blank" rel="noopener noreferrer">${esc(l.name)}${l.language ? ` <small>${esc(l.language)}</small>` : ''}</a></li>`).join('')}</ul></div>` : ''}
-       ${providerLink ? `<a class="text-btn" href="${esc(providerLink)}" target="_blank" rel="noopener noreferrer">Tüm resmî izleme seçenekleri</a>` : ''}`
-    : `<p class="muted">${a.source === 'TMDB' ? 'Türkiye için yayın platformu verisi bulunamadı.' : 'Yayın platformu bilgisi şu an alınamıyor (TMDB bağlantısı yok).'}</p>${providerLink ? `<a class="btn btn-ghost btn-sm" href="${esc(providerLink)}" target="_blank" rel="noopener noreferrer">TMDB’de izleme seçeneklerini kontrol et</a>` : ''}`;
-  return `<aside class="where"><h2>Yasal olarak nerede izlenir</h2>${body}${p ? `<p class="credit">Türkiye verisi: JustWatch</p>` : ''}</aside>`;
+async function loadMangaBridge(a) {
+  const slot = $('#title-bridge');
+  if (!slot) return;
+  const queries = [...new Set([a.original, a.title].map(s => String(s || '').trim()).filter(s => s.length >= 2))].slice(0, 2);
+  let hit = null;
+  for (const q of queries) {
+    try {
+      const d = await api(`/api/readfy/search?q=${encodeURIComponent(q)}`, 12000, {quiet: true});
+      hit = pickHit(q, d.items, m => m.title, m => m.alts);
+      if (hit) break;
+    } catch {}
+  }
+  if (!hit || !$('#title-bridge')) return;
+  slot.innerHTML = `<a class="bridge" href="#/readfy/${esc(hit.id)}">${hit.cover ? `<img src="${esc(hit.cover)}" alt="">` : ''}<span><small>Mangası</small><b>${esc(hit.title)}</b></span></a>`;
 }
+
+async function loadShowBridge(m) {
+  const slot = $('#show-bridge');
+  if (!slot || !m) return;
+  const queries = [...new Set([m.title, ...(m.alts || [])].map(s => String(s || '').trim()).filter(s => s.length >= 2))].slice(0, 3);
+  let hit = null;
+  for (const q of queries) {
+    try {
+      const d = await api(`/api/search?q=${encodeURIComponent(q)}&section=anime`, 12000, {quiet: true});
+      hit = pickHit(q, d.items, x => x.title, x => [x.original]);
+      if (hit) break;
+    } catch {}
+  }
+  if (!hit || !$('#show-bridge')) return;
+  slot.innerHTML = `<a class="bridge" href="#/izle/${esc(hit.kind)}/${esc(hit.id)}">${hit.poster ? `<img src="${esc(hit.poster)}" alt="">` : ''}<span><small>Dizisi</small><b>${esc(hit.title)}</b></span></a>`;
+}
+
+function dayLabel(date) {
+  const today = new Intl.DateTimeFormat('en-CA', {timeZone: 'Europe/Istanbul', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date());
+  const tomorrow = new Intl.DateTimeFormat('en-CA', {timeZone: 'Europe/Istanbul', year: 'numeric', month: '2-digit', day: '2-digit'}).format(new Date(Date.now() + 86400000));
+  const pretty = new Date(`${date}T12:00:00+03:00`).toLocaleDateString('tr-TR', {timeZone: 'Europe/Istanbul', weekday: 'long', day: 'numeric', month: 'long'});
+  if (date === today) return `Bugün · ${pretty}`;
+  if (date === tomorrow) return `Yarın · ${pretty}`;
+  return pretty;
+}
+
+async function viewWeek(v) {
+  document.title = 'Bu hafta — LOVELL';
+  main.innerHTML = `<div class="week">${loading('Bu haftanın bölümleri alınıyor')}</div>`;
+  let data;
+  try { data = await api('/api/week', 20000); } catch (e) { if (v === routeId) main.innerHTML = `<div class="week">${errorBox(e)}</div>`; return; }
+  if (v !== routeId) return;
+  const days = data.days || [];
+  main.innerHTML = `<div class="week">
+    <header class="hub-hero"><p class="eyebrow">Yayın takvimi</p><h1>Bu hafta</h1><p>Önümüzdeki yedi gün. Saatler İstanbul.</p></header>
+    ${days.length ? days.map(day => `<section class="week-day"><h2>${esc(dayLabel(day.date))}</h2><div class="week-list">${day.items.map(item => `<a class="week-row${item.past ? ' is-past' : ''}" href="#/izle/al/${esc(item.id)}"><time>${esc(item.time)}</time>${item.poster ? `<img src="${esc(item.poster)}" alt="">` : '<span class="rf-ph"></span>'}<span><b>${esc(item.title)}</b><small>${item.episode ? `${item.episode}. bölüm` : ''}</small></span></a>`).join('')}</div></section>`).join('') : '<p class="muted">Bu hafta listelenecek yayın yok.</p>'}
+  </div>`;
+  imgFallback();
+}
+
 
 function go(ctx, s, e) { location.hash = watchHref(ctx.a, s, e); }
 // Bağlantıyı paylaş: telefonda sistem paylaşım menüsü, masaüstünde panoya kopyalama.
@@ -787,7 +1019,7 @@ function syncSeen(ctx) {
   $('span', b).textContent = on ? 'İzlendi' : isMovie(ctx.a) ? 'İzlendi say' : 'Bölümü izlendi say';
 }
 function toggleSeen(ctx) {
-  if (isSeen(ctx)) { delete progress[seenKey(ctx)]; store.set('progress', progress); toast('İzlendi işareti kaldırıldı'); }
+  if (isSeen(ctx)) { delete progress[seenKey(ctx)]; store.set('progress', progress); scheduleSync(); toast('İzlendi işareti kaldırıldı'); }
   else { const d = (ctx.episodes.find(x => x.n === ctx.e)?.runtime || ctx.a.runtime || 24) * 60; saveProgress(ctx.a, ctx.s, ctx.e, d, d); toast(isMovie(ctx.a) ? 'Film izlendi olarak işaretlendi' : `${ctx.e}. bölüm izlendi olarak işaretlendi`, 'success'); }
   syncSeen(ctx);
   if (!isMovie(ctx.a) && $('#ep-list')) renderEpisodes(ctx, Number($('#range')?.value || 0));
@@ -821,11 +1053,17 @@ function renderEpisodes(ctx, page = 0) {
       <span class="ep-n">${ep.n}</span>
       <span class="ep-thumb thumb">${ep.still ? `<img src="${esc(ep.still)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}${pct ? `<span class="bar"><i style="width:${pct}%"></i></span>` : ''}</span>
       <span class="ep-body"><span class="ep-title">${esc(ep.title)}</span>
-        <span class="ep-meta">${ep.runtime ? `<span>${ep.runtime} dk</span>` : ''}${ep.date ? `<span>${fmtDate(ep.date)}</span>` : ''}${has ? '<span class="has">Dosyan var</span>' : ''}${pct > 90 ? '<span>İzlendi</span>' : ''}</span>
+        <span class="ep-meta">${ep.runtime ? `<span>${ep.runtime} dk</span>` : ''}${ep.date ? `<span>${fmtDate(ep.date)}</span>` : ''}${pct > 90 ? '<span>İzlendi</span>' : ''}</span>
         ${ep.overview ? `<span class="ep-text">${esc(ep.overview)}</span>` : ''}</span>
     </a></li>`;
   }).join('');
   imgFallback(list);
+  const strip = $('#ep-strip');
+  if (strip) {
+    strip.hidden = eps.length < 2;
+    strip.innerHTML = `<span>Bölümler <b>${eps.length}</b></span><div class="ep-strip-list">${eps.map(ep => `<a href="${watchHref(ctx.a, ctx.s, ep.n)}" class="${ep.n === ctx.e ? 'on' : ''}">${ep.n}</a>`).join('')}</div>`;
+    strip.querySelector('.on')?.scrollIntoView({inline: 'center', block: 'nearest', behavior: 'auto'});
+  }
 }
 function updateNow(ctx) {
   const el = $('#now');
@@ -864,11 +1102,34 @@ function animeIds(a, s, e) {
   return null;
 }
 // Türkçe kaynak seçimi: dublaj tercihi açıksa önce Türkçe dublaj, sonra diğer Türkçe kaynaklar.
-function trIndex(list) {
-  const dub = store.get('preferDub', true) ? list.findIndex(x => x.dub) : -1;
-  return dub >= 0 ? dub : list.findIndex(x => x.lang === 'tr');
+function trIndex(list, wantDub = store.get('preferDub', true)) {
+  const preferred = list.findIndex(x => x.lang === 'tr' && !!x.dub === wantDub);
+  return preferred >= 0 ? preferred : list.findIndex(x => x.lang === 'tr');
 }
 const playPath = (ctx, phase) => { const ids = animeIds(ctx.a, ctx.s, ctx.e); return `/api/play/${ctx.a.kind}/${ctx.a.id}?s=${ctx.s}&e=${ctx.e}${ids?.al ? `&alId=${ids.al}` : ''}${ids?.mal ? `&malId=${ids.mal}` : ''}${ids?.ep && ids.ep !== ctx.e ? `&aep=${ids.ep}` : ''}&phase=${phase}`; };
+function wantsDub(ctx) { return store.get(secOf(ctx.a) === 'anime' ? 'preferDubAnime' : 'preferDub', secOf(ctx.a) !== 'anime'); }
+function sourceLanguageCounts(ctx) {
+  const direct = ctx.sources || [], embeds = ctx.embeds || [];
+  const tr = t => /^(tr|tur)(?:[-_]|$)/i.test(t?.lang || t?.language || '');
+  const dub = s => s.dub === true && tr(s);
+  const sub = s => (s.subtitles || []).some(tr) || (s.tr === true && s.lang === 'sub');
+  return {direct:direct.length, embeds:embeds.length, dub:direct.filter(dub).length + embeds.filter(dub).length, sub:direct.filter(sub).length + embeds.filter(sub).length};
+}
+function paintSourceAvailability(ctx) {
+  const el = $('#language-status'); if (!el || ctx.v !== routeId) return;
+  const c = sourceLanguageCounts(ctx), anime = secOf(ctx.a) === 'anime', count = anime ? c.sub : c.dub;
+  const label = anime ? 'Türkçe altyazı' : 'Türkçe dublaj';
+  el.textContent = `${label}: ${count ? count + ' kaynak bildiriyor; oynatma ve dil henüz doğrulanmadı.' : ctx.remote === 'loading' ? 'aranıyor…' : 'bu bölüm için bu dili bildiren kaynak bulunamadı.'} ${c.direct} doğrudan, ${c.embeds} gömülü kaynak.`;
+}
+function viewToolsDownload() {
+  document.title = 'Lovell Tools - LOVELL';
+  main.innerHTML = `<div class="page tools-download"><header class="hub-hero"><p class="eyebrow">LOVELL / MASAÜSTÜ</p><h1>Lovell Tools</h1><p>Masaüstü uygulamasının indirme ve sürüm merkezi.</p></header>
+    <section class="tools-release" aria-labelledby="tools-release-title"><div class="tools-art" aria-hidden="true"><span>LT</span><small>LOVELL TOOLS</small><div class="tools-art-lines"><i></i><i></i><i></i></div></div>
+    <div class="tools-release-info"><span class="tools-status">Henüz yayımlanmadı</span><h2 id="tools-release-title">Windows için Lovell Tools</h2><p>İndirme sayfası hazır. Doğrulanmış bir kurulum paketi henüz eklenmedi.</p><button class="btn btn-primary" type="button" disabled aria-describedby="tools-download-note">İndirme henüz hazır değil</button><p id="tools-download-note" class="tools-note">Kullanılabilir bir sürüm yayımlandığında indirme bağlantısı burada açılacak.</p>
+    <dl class="tools-meta"><div><dt>Platform</dt><dd>Windows</dd></div><div><dt>Sürüm</dt><dd>Henüz yok</dd></div><div><dt>Dosya boyutu</dt><dd>—</dd></div><div><dt>SHA-256</dt><dd>Paket eklendiğinde</dd></div></dl></div></section>
+    <section class="tools-details"><h2>Sürüm notları</h2><p>Henüz indirilebilir bir sürüm bulunmuyor. Kurulum adımları ve değişiklikler ilk sürümle birlikte burada yer alacak.</p></section></div>`;
+}
+
 async function loadSources(ctx) {
   $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar hazırlanıyor…</div>`;
   let d;
@@ -880,8 +1141,9 @@ async function loadSources(ctx) {
   ctx.folder = d.folder;
   ctx.vidrift = d.vidrift || ctx.embeds.find(e => e.id === 'vidrift')?.url || null;
   ctx.mode = null;
-  ctx.remote = ctx.sources.length ? 'skip' : 'loading';   // kendi dosyan varsa başka kaynak aramaya gerek yok
-  if (ctx.sources.length) return mountPlayer(ctx, 0);
+  ctx.remote = ctx.sources.length ? 'skip' : 'loading';
+  paintSourceAvailability(ctx);   // kendi dosyan varsa başka kaynak aramaya gerek yok
+  if (ctx.sources.length) return mountPlayer(ctx, Math.max(0, trIndex(ctx.sources, wantsDub(ctx))));
   // İki sorgu: kısa bütçeli olan hızlı kaynakları (çoğu Türkçe) 2-3 saniyede getirir, tam sorgu yavaşları bekler.
   const quick = store.get('preferTr', true) ? fetchRemote(ctx, 3500) : Promise.resolve();
   fetchRemote(ctx);
@@ -895,7 +1157,7 @@ async function loadSources(ctx) {
   }
   const mem = srcMemory.get(ctx.a);
   const memIdx = mem?.kind === 'source' ? ctx.sources.findIndex(x => x.name === mem.name) : -1;
-  const tr = store.get('preferTr', true) ? trIndex(ctx.sources) : -1;
+  const tr = store.get('preferTr', true) ? trIndex(ctx.sources, wantsDub(ctx)) : -1;
   if (memIdx >= 0) mountPlayer(ctx, memIdx);
   else if (tr >= 0) mountPlayer(ctx, tr);
   else if (ctx.embeds.length) mountEmbed(ctx, preferredEmbed(ctx));
@@ -910,8 +1172,16 @@ async function fetchRemote(ctx, budget = 0) {
   const sig = x => `${x.origin || ''}|${x.name}`;
   const known = new Set((ctx.sources || []).flatMap(x => [x.url, sig(x)]));
   const fresh = (d.sources || []).filter(x => !known.has(x.url) && !known.has(sig(x)) && known.add(sig(x)));
+  const knownEmbed = new Set((ctx.embeds || []).map(e => e.url));
+  const freshEmbeds = (d.embeds || []).filter(e => e?.url && !knownEmbed.has(e.url));
+  if (freshEmbeds.length) {
+    const combined = [...(ctx.embeds || []), ...freshEmbeds];
+    // Açık iframe'in indeksi ve olay dinleyicileri arka plan sorgusuyla değişmemeli.
+    ctx.embeds = ctx.mode === 'embed' ? combined : rankEmbeds(combined);
+  }
   const firstFresh = ctx.sources.length;
   ctx.sources = [...(ctx.sources || []), ...fresh];
+  paintSourceAvailability(ctx);
   // Yeni gelenler arasında Türkçe dublaj varsa bildirim onu açar.
   const dubAt = fresh.findIndex(x => x.dub);
   const announce = () => {
@@ -920,19 +1190,33 @@ async function fetchRemote(ctx, budget = 0) {
     toast(dubAt >= 0 ? 'Türkçe dublaj bulundu' : `${fresh.length} doğrudan kaynak bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountPlayer(ctx, at); }});
   };
   // Kısa sorgu yalnızca eldekini ekler; arama durumunu tam sorgu kapatır.
+  const offerDizi = () => {
+    const freshPin = freshEmbeds.find(e => e.pin && !ctx.failedSources?.has(sourceIdentity('embed', e))); 
+    if (!freshPin || ctx.v !== routeId) return;
+    const at = ctx.embeds.findIndex(e => e.url === freshPin.url);
+    if (at < 0 || (ctx.mode === 'embed' && ctx.index === at)) return;
+    if (!ctx.played && (ctx.autoSkips > 0 || ctx.mode !== 'embed')) { mountEmbed(ctx, at); return; }
+    toast(`${freshPin.name} oynatıcısı bulundu`, 'success', {label: 'Şimdi izle', fn: () => { if (ctx.v === routeId) mountEmbed(ctx, at); }});
+  };
   if (budget) {
-    if (fresh.length && ctx.mode) refreshSrcBar(ctx);
-    if (ctx.mode === 'embed') announce();
+    if ((fresh.length || freshEmbeds.length) && ctx.mode) refreshSrcBar(ctx);
+    if (ctx.mode === 'embed') { announce(); offerDizi(); }
     return;
   }
   ctx.remote = ctx.sources.some(x => x.origin !== 'local' && x.origin !== 'manifest') ? 'done' : 'none';
+  paintSourceAvailability(ctx);
   if (ctx.mode === 'embed') {
     refreshSrcBar(ctx);
     announce();
+    offerDizi();
   } else if (!ctx.mode && !ctx.deciding) {
     // Hiç embed yoktu: bulunanı aç, yoksa boş durumu göster
     if (ctx.sources.length) mountPlayer(ctx, 0); else emptyStage(ctx);
-  } else if (ctx.mode === 'player') refreshSrcBar(ctx);
+  } else if (ctx.mode === 'player') {
+    refreshSrcBar(ctx);
+    // Doğrudan kaynaklar açılmadan düştüyse Dizi78 hazır olduğunda ona geç.
+    if (!ctx.played && ((ctx.autoSkips || 0) > 0 || ctx.failShown)) offerDizi();
+  }
 }
 // Tercihleri hatırla: son seçilen embed ve (anime için) altyazılı / dublaj.
 // Başlık başına kaynak hafızası: en son gerçekten oynayan kaynak (oynatıcı ilerleme bildirdiğinde kaydedilir).
@@ -982,25 +1266,52 @@ function preferredEmbed(ctx) {
   if (pref?.lang) { const i = list.findIndex(e => e.anime && e.lang === pref.lang); if (i >= 0) return i; }
   return 0;
 }
-const EMBED_SHOWN = 8;
+const EMBED_SHOWN = 6;
 function srcBarHtml(ctx, mode, index) {
   const direct = ctx.sources || [], embeds = ctx.embeds || [];
   const chip = (cls, attr, text) => `<button class="source-chip ${cls}" type="button" ${attr} title="${esc(text)}">${esc(text)}</button>`;
   const status = ctx.remote === 'loading' ? '<span class="src-status" role="status"><span class="spin"></span>Doğrudan kaynaklar aranıyor…</span>' : '';
   const own = direct.length && direct.every(x => x.origin === 'local' || x.origin === 'manifest');
-  const trList = embeds.map((e, i) => [e, i]).filter(([e]) => e.tr), genList = embeds.map((e, i) => [e, i]).filter(([e]) => !e.tr);
-  return `${direct.length ? `<span class="source-label">${own ? 'Dosya' : 'Doğrudan'}</span><div class="source-list">${direct.map((x, i) => chip(`${mode === 'player' && i === index ? 'on' : ''} ${x.lang === 'tr' ? 'is-tr' : ''} ${x.dub ? 'is-dub' : ''}`, `data-source="${i}"`, x.dub && !/dublaj/i.test(x.name) ? `${x.name} · Dublaj` : x.name)).join('')}</div>` : ''}
-    ${trList.length ? `<span class="source-label">Türkçe fansub</span><div class="source-list">${trList.map(([e, i]) => chip(`${mode === 'embed' && i === index ? 'on' : ''} is-tr`, `data-embed="${i}"`, e.name)).join('')}</div>` : ''}
-    ${genList.length ? `<span class="source-label">Embed</span><div class="source-list">${genList.map(([e, i], k) => (k < EMBED_SHOWN || ctx.moreEmbeds || (mode === 'embed' && i === index)) ? chip(`${mode === 'embed' && i === index ? 'on' : ''} ${e.backup ? 'is-backup' : ''}`, `data-embed="${i}"`, e.name) : '').join('')}${genList.length > EMBED_SHOWN ? `<button class="source-chip source-chip-dim" type="button" data-more-embeds>${ctx.moreEmbeds ? 'Daha az' : `Daha fazla (+${genList.length - EMBED_SHOWN})`}</button>` : ''}${!CLOUD && mode === 'embed' ? '<button class="source-chip source-chip-dim" type="button" id="add-local-hint" title="Kendi dosyanı ekle">+ Dosyam</button>' : ''}</div>` : ''}
+
+  // Türkçe dublaj doğrudan kaynaklar en öne; diğerleri arkada
+  const dubDirect  = direct.filter(x => x.dub || x.lang === 'tr');
+  const restDirect = direct.filter(x => !x.dub && x.lang !== 'tr');
+
+  // Embed'leri kategorize et: tr fansub, pin (Türkçe dublaj embed), anime, genel, backup
+  const trList   = embeds.map((e,i)=>[e,i]).filter(([e])=>e.tr);
+  const pinList  = embeds.map((e,i)=>[e,i]).filter(([e])=>e.pin && !e.tr);
+  const aniList  = embeds.map((e,i)=>[e,i]).filter(([e])=>e.anime && !e.pin && !e.tr);
+  const genList  = embeds.map((e,i)=>[e,i]).filter(([e])=>!e.anime && !e.tr && !e.pin && !e.backup);
+  const bakList  = embeds.map((e,i)=>[e,i]).filter(([e])=>e.backup);
+
+  // Doğrudan kaynaklar için kısa isim: "SinemaCX" değil de uzun sağlayıcı + etiket
+  const srcName = x => {
+    const base = x.name || '';
+    if (x.dub && !/dublaj/i.test(base)) return `${base} · TR Dublaj`;
+    return base;
+  };
+
+  const allDirect = [...dubDirect, ...restDirect];
+
+  return `${allDirect.length ? `<span class="source-label">${own ? 'Dosya' : 'Doğrudan'}</span><div class="source-list">${allDirect.map((x,i) => {
+    const realIdx = direct.indexOf(x);
+    return chip(`${mode==='player'&&realIdx===index?'on':''} ${x.lang==='tr'?'is-tr':''} ${x.dub?'is-dub':''}`, `data-source="${realIdx}"`, srcName(x));
+  }).join('')}</div>` : ''}
+    ${pinList.length ? `<span class="source-label">Türkçe</span><div class="source-list">${pinList.map(([e,i])=>chip(`${mode==='embed'&&i===index?'on':''} is-dub`,`data-embed="${i}"`,e.name)).join('')}</div>` : ''}
+    ${trList.length ? `<span class="source-label">Türkçe fansub</span><div class="source-list">${trList.map(([e,i])=>chip(`${mode==='embed'&&i===index?'on':''} is-tr`,`data-embed="${i}"`,e.name)).join('')}</div>` : ''}
+    ${aniList.length ? `<span class="source-label">Anime</span><div class="source-list">${aniList.map(([e,i])=>chip(`${mode==='embed'&&i===index?'on':''}`,`data-embed="${i}"`,e.name)).join('')}</div>` : ''}
+    ${genList.length ? `<span class="source-label">Embed</span><div class="source-list">${genList.map(([e,i],k)=>(k<EMBED_SHOWN||ctx.moreEmbeds||(mode==='embed'&&i===index))?chip(`${mode==='embed'&&i===index?'on':''}`,`data-embed="${i}"`,e.name):'').join('')}${genList.length>EMBED_SHOWN?`<button class="source-chip source-chip-dim" type="button" data-more-embeds>${ctx.moreEmbeds?'Daha az':`+${genList.length-EMBED_SHOWN}`}</button>`:''}</div>` : ''}
+    ${bakList.length&&ctx.moreEmbeds ? `<span class="source-label">Yedek</span><div class="source-list">${bakList.map(([e,i])=>chip(`${mode==='embed'&&i===index?'on':''} is-backup`,`data-embed="${i}"`,e.name)).join('')}</div>` : ''}
     ${status}`;
 }
 function bindSrcBar(ctx) {
   const bar = $('#src-bar');
   if (!bar) return;
-  bar.querySelectorAll('[data-source]').forEach(b => b.onclick = () => mountPlayer(ctx, Number(b.dataset.source)));
+  bar.querySelectorAll('[data-source]').forEach(b => b.onclick = () => { ctx.autoSkips = 0; ctx.failShown = false; mountPlayer(ctx, Number(b.dataset.source)); });
   $('[data-more-embeds]', bar)?.addEventListener('click', () => { ctx.moreEmbeds = !ctx.moreEmbeds; refreshSrcBar(ctx); });
   bar.querySelectorAll('[data-embed]').forEach(b => b.onclick = () => {
     const i = Number(b.dataset.embed), e = ctx.embeds[i];
+    ctx.autoSkips = 0; ctx.failShown = false;
     if (e) store.set('embedPref', {id: e.id, lang: e.anime ? e.lang : store.get('embedPref', null)?.lang});
     mountEmbed(ctx, i);
   });
@@ -1010,41 +1321,39 @@ function refreshSrcBar(ctx) {
   if (!bar) return;
   bar.innerHTML = srcBarHtml(ctx, ctx.mode, ctx.index);
   bindSrcBar(ctx);
-  bindLocalHint(ctx);
 }
 // Mevcut kaynak çalışmadığında sıradakine geç (doğrudan kaynaklar, sonra embed'ler).
+function sourceIdentity(mode, source) { return mode + ':' + (source?.url || source?.name || ''); }
+function nextCandidate(ctx) {
+  const failed = ctx.failedSources || new Set();
+  const direct = (ctx.sources || []).map((source, index) => ({mode: 'player', source, index}));
+  const embeds = (ctx.embeds || []).map((source, index) => ({mode: 'embed', source, index}));
+  const ordered = ctx.mode === 'player' ? [...direct.slice(ctx.index + 1), ...embeds, ...direct.slice(0, ctx.index)] : [...embeds.slice(ctx.index + 1), ...direct, ...embeds.slice(0, ctx.index)];
+  return ordered.find(x => !failed.has(sourceIdentity(x.mode, x.source)));
+}
 function nextSource(ctx) {
-  if (ctx.mode === 'player' && ctx.sources[ctx.index + 1]) return mountPlayer(ctx, ctx.index + 1);
-  if (ctx.mode === 'player' && ctx.embeds.length) return mountEmbed(ctx, 0);
-  if (ctx.mode === 'embed' && ctx.embeds[ctx.index + 1]) return mountEmbed(ctx, ctx.index + 1);
-  if (ctx.mode === 'embed' && ctx.sources.length) return mountPlayer(ctx, 0);
-  toast('Başka kaynak kalmadı');
+  const current = (ctx.mode === 'player' ? ctx.sources : ctx.embeds)?.[ctx.index];
+  (ctx.failedSources ||= new Set()).add(sourceIdentity(ctx.mode, current));
+  const next = nextCandidate(ctx);
+  if (!next) { toast('Başka kaynak kalmadı; yeniden deneyebilir veya daha sonra açabilirsin'); return; }
+  if (next.mode === 'player') mountPlayer(ctx, next.index); else mountEmbed(ctx, next.index);
 }
 
 function emptyStage(ctx) {
   const a = ctx.a;
-  const first = a.providers?.stream?.[0] || a.providers?.free?.[0];
-  const official = a.links?.[0];
   const label = isMovie(a) ? 'Bu film' : `${ctx.s}. sezon ${ctx.e}. bölüm`;
 
   $('#stage').innerHTML = `<div class="stage-inner stage-empty">
     ${a.backdrop ? `<img class="stage-bg" src="${esc(a.backdrop)}" alt="" data-fb>` : ''}
     <div class="stage-msg">
       <h2>${label} için video dosyası yok</h2>
-      <p>${CLOUD ? 'Bu bölüm için sitede oynatılabilir bir kaynak yok. Yasal bir platformda izleyebilir ya da fragmana bakabilirsin.' : 'LOVELL kendi bilgisayarındaki videoları oynatır. Bu bölümü yasal bir platformda izleyebilir ya da dosyanı ekleyebilirsin.'}</p>
+      <p>Bu bölüm için sitede oynatılabilir bir kaynak bulunamadı.</p>
       <div class="actions">
-        ${first && a.providers?.link ? `<a class="btn btn-play" href="${esc(a.providers.link)}" target="_blank" rel="noopener noreferrer">${esc(first.name)} üzerinde aç</a>` : official ? `<a class="btn btn-play" href="${esc(official.url)}" target="_blank" rel="noopener noreferrer">${esc(official.name)} üzerinde aç</a>` : ''}
         ${a.trailer ? `<button class="btn btn-ghost" data-trailer>${PLAY}Fragmanı izle</button>` : ''}
       </div>
-      ${CLOUD ? '' : `<details class="addfile"><summary>Bilgisayarımdaki dosyayı ekle</summary>
-        <p>Videoyu proje içindeki <code>media/${esc(ctx.folder)}/</code> klasörüne ${isMovie(a) ? 'koy' : `<code>S${String(ctx.s).padStart(2, '0')}E${String(ctx.e).padStart(2, '0')}.mp4</code> adıyla koy`}. Sonra yeniden tara.</p>
-        <div class="actions"><button class="btn btn-ghost btn-sm" data-copy="${esc(ctx.folder)}">Klasör adını kopyala</button><button class="btn btn-ghost btn-sm" data-rescan>Yeniden tara</button></div>
-      </details>`}
     </div></div>`;
   const st = $('#stage');
   $('[data-trailer]', st)?.addEventListener('click', () => openTrailer(a.trailer));
-  if ($('[data-copy]', st)) $('[data-copy]', st).onclick = ev => navigator.clipboard?.writeText(ev.target.dataset.copy).then(() => toast('Kopyalandı'), () => toast(ev.target.dataset.copy));
-  if ($('[data-rescan]', st)) $('[data-rescan]', st).onclick = async () => { await refreshLibrary(true); loadSources(ctx); if (!isMovie(a)) renderEpisodes(ctx, Math.floor(Math.max(0, ctx.episodes.findIndex(x => x.n === ctx.e)) / 50)); toast(library.has(keyOf(a)) ? 'Klasör tarandı' : 'Bu anime için dosya bulunamadı'); };
   imgFallback(st);
   $('#now') && updateNow(ctx);
 }
@@ -1063,11 +1372,12 @@ function parsePlayerMessage(raw) {
     if (d.type === 'vidrift:ended') return {ended: true};
     if (d.type === 'vidrift:episode') return {episode: {s: num(d.season), e: num(d.episode)}};
     if (d.type === 'vidrift:exit') return {exit: true};
+    if (d.type === 'vidrift:error') return {failed: true};
     return null;
   }
   if (d.type === 'PLAYER_EVENT' && d.data && typeof d.data === 'object') {
     const x = d.data;
-    if (x.player_status) return {time: num(x.player_progress), duration: num(x.player_duration), ended: x.player_status === 'completed'};
+    if (x.player_status) return {time: num(x.player_progress), duration: num(x.player_duration), ended: x.player_status === 'completed', failed: /^(error|failed)$/.test(x.player_status)};
     const ev = x.event || x.type;
     return {time: num(x.currentTime), duration: num(x.duration), ended: ev === 'ended' || ev === 'complete', failed: ev === 'error'};
   }
@@ -1093,7 +1403,7 @@ function mountEmbed(ctx, index) {
   if (!embed) { emptyStage(ctx); return; }
   destroyPlayer();
   const stage = $('#stage');
-  ctx.mode = 'embed'; ctx.index = index;
+  ctx.mode = 'embed'; ctx.index = index; ctx.failShown = false; ctx.played = false;
   const src = embedUrlFor(ctx, embed);
 
   stage.innerHTML = `<div class="stage-inner vidrift-wrap">
@@ -1111,18 +1421,17 @@ function mountEmbed(ctx, index) {
 
   bindSrcBar(ctx);
 
-  // Iframe 15 saniyede açılmazsa sıradaki kaynağı öner.
+  // iframe load olayı 404 sayfasında da çalışır; oynatma kanıtı değildir.
   const iframeEl = stage.querySelector('.vidrift-frame');
-  let embedLoaded = false;
-  iframeEl?.addEventListener('load', () => { embedLoaded = true; }, {once: true});
+  const help = document.createElement('div');
+  help.className = 'source-help';
+  help.innerHTML = '<span role="status">Görüntü yok veya hata mı var?</span><button type="button" class="btn btn-sm btn-ghost" data-retry-source>Yeniden dene</button><button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>';
+  stage.append(help);
+  $('[data-next-src]', help).onclick = () => { markHealth(false); nextSource(ctx); };
+  $('[data-retry-source]', help).onclick = () => mountEmbed(ctx, index);
   const embedErrorTimer = setTimeout(() => {
-    if (!document.contains(stage) || embedLoaded) return;
-    const warn = document.createElement('div');
-    warn.className = 'stage-error';
-    warn.setAttribute('role', 'alert');
-    warn.innerHTML = '<p>Bu kaynak yüklenemedi.</p><button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>';
-    stage.querySelector('.stage-inner')?.prepend(warn);
-    $('[data-next-src]', warn).onclick = () => nextSource(ctx);
+    if (ctx.v !== routeId || ctx.mode !== 'embed' || ctx.index !== index || ctx.played) return;
+    $('[role="status"]', help).textContent = 'Görüntü başlamadıysa başka kaynağı deneyebilirsin.';
   }, 15000);
 
   // Oynatıcı olayları: ilerlemeyi kaydet, bitince sonraki bölüm, "tüm sunucular başarısız" olunca sıradaki kaynak.
@@ -1130,8 +1439,7 @@ function mountEmbed(ctx, index) {
   let lastSave = 0, endedOnce = false, failedOnce = false, healthMarked = false;
   const mountedAt = Date.now(), view = ctx.v;
   const markHealth = ok => { if (!healthMarked) { healthMarked = true; embedHealth.mark(embed.id, ok); } };
-  // 4 dakika açık kalan oynatıcı çalışıyor sayılır (olay göndermeyen oynatıcılar için)
-  const healthTimer = setTimeout(() => markHealth(true), 4 * 60 * 1000);
+  // Sağlık puanı yalnızca gerçek oynatma ilerlemesiyle yükselir.
   const onMessage = e => {
     // Yalnızca bu iframe'den (ya da aynı sağlayıcının iç çerçevesinden) gelen mesajlar
     if (!iframeEl || (e.source !== iframeEl.contentWindow && e.origin !== embedOrigin)) return;
@@ -1148,10 +1456,10 @@ function mountEmbed(ctx, index) {
       const n = nextOf(ctx);
       if (n) nextUp(ctx, n);
     }
+    if (ev.time > 2) ctx.played = true;
     if (ev.failed && !failedOnce && ctx.mode === 'embed' && ctx.index === index) {
       failedOnce = true;
-      toast(`${embed.name} oynatamadı, sıradaki kaynağa geçiliyor`, 'info');
-      setTimeout(() => { if (ctx.mode === 'embed' && ctx.index === index && ctx.v === routeId) nextSource(ctx); }, 1500);
+      stageError(ctx, 'Bu kaynak videoyu açamadı. Başka bir kaynak deneyebilirsin.');
     }
   };
   window.addEventListener('message', onMessage);
@@ -1160,13 +1468,11 @@ function mountEmbed(ctx, index) {
     cleanup: [
       () => window.removeEventListener('message', onMessage),
       () => clearTimeout(embedErrorTimer),
-      () => clearTimeout(healthTimer),
       // Aynı sayfada 30 saniye dolmadan başka kaynağa geçildiyse bu oynatıcı açılmamış sayılır
       () => { if (ctx.v === view && ctx.v === routeId && Date.now() - mountedAt < 30000) markHealth(false); },
     ]
   };
 
-  bindLocalHint(ctx);
   $('#now') && updateNow(ctx);
 }
 function bindLocalHint(ctx) {
@@ -1189,16 +1495,23 @@ function bindLocalHint(ctx) {
 // Geriye dönük uyumluluk
 function mountVidrift(ctx) { mountEmbed(ctx, 0); }
 
-// ArtPlayer (https://artplayer.org) ve hls.js CDN'den bir kez yüklenir; yüklenemezse tarayıcının kendi oynatıcısı kullanılır.
-const loadScript = url => new Promise((res, rej) => { const s = document.createElement('script'); s.src = url; s.async = true; s.onload = res; s.onerror = rej; document.head.append(s); });
+// ArtPlayer (https://artplayer.org) ve hls.js sitenin kendi dosyalarından bir kez yüklenir; yüklenemezse tarayıcının kendi oynatıcısı kullanılır.
+const loadScript = url => new Promise((res, rej) => {
+  const s = document.createElement('script');
+  const finish = error => { clearTimeout(timer); s.onload = s.onerror = null; if (error) { s.remove(); rej(error); } else res(); };
+  const timer = setTimeout(() => finish(Error('Oynatıcı yükleme zaman aşımı')), 8000);
+  s.src = url; s.async = true; s.onload = () => finish(); s.onerror = () => finish(Error('Oynatıcı yüklenemedi'));
+  document.head.append(s);
+});
 let artReady, hlsReady, dashReady;
-const getArt = () => artReady ||= loadScript('https://cdn.jsdelivr.net/npm/artplayer@5.2.3/dist/artplayer.js').then(() => window.Artplayer).catch(() => { artReady = null; return null; });
-const getHls = () => hlsReady ||= loadScript('https://cdn.jsdelivr.net/npm/hls.js@1.5.20/dist/hls.min.js').then(() => window.Hls).catch(() => { hlsReady = null; return null; });
-const getDash = () => dashReady ||= loadScript('https://cdn.dashjs.org/v5.2.1/modern/umd/dash.all.min.js').then(() => window.dashjs).catch(() => { dashReady = null; return null; });
+const getArt = () => artReady ||= loadScript('/public/vendor/artplayer-5.2.3.js').then(() => window.Artplayer).catch(() => { artReady = null; return null; });
+const getHls = () => hlsReady ||= loadScript('/public/vendor/hls-1.5.20.min.js').then(() => window.Hls).catch(() => { hlsReady = null; return null; });
+const getDash = () => dashReady ||= loadScript('/public/vendor/dash-5.2.1.min.js').then(() => window.dashjs).catch(() => { dashReady = null; return null; });
 const ART_TR = {'Video Info': 'Video bilgisi', Close: 'Kapat', 'Video Load Failed': 'Video yüklenemedi', Volume: 'Ses', Play: 'Oynat', Pause: 'Duraklat', Rate: 'Hız', Mute: 'Sesi kapat', 'Video Flip': 'Çevir', Horizontal: 'Yatay', Vertical: 'Dikey', Reconnect: 'Yeniden bağlan', 'Show Setting': 'Ayarlar', 'Hide Setting': 'Ayarları gizle', Screenshot: 'Ekran görüntüsü', 'Play Speed': 'Oynatma hızı', 'Aspect Ratio': 'En boy oranı', Default: 'Varsayılan', Normal: 'Normal', Open: 'Aç', 'Switch Video': 'Video değiştir', 'Switch Subtitle': 'Altyazı', Fullscreen: 'Tam ekran', 'Exit Fullscreen': 'Tam ekrandan çık', 'Web Fullscreen': 'Pencere tam ekran', 'Exit Web Fullscreen': 'Pencere tam ekrandan çık', 'Mini Player': 'Mini oynatıcı', 'PIP Mode': 'Resim içinde resim', 'Exit PIP Mode': 'Resim içinde resimden çık', 'PIP Not Supported': 'Desteklenmiyor', 'Fullscreen Not Supported': 'Tam ekran desteklenmiyor', 'Subtitle Offset': 'Altyazı kaydırma', 'Last Seen': 'Son izlenen', 'Jump Play': 'Oraya git', AirPlay: 'AirPlay', 'AirPlay Not Available': 'AirPlay yok', 'Subtitle': 'Altyazı', 'Off': 'Kapalı'};
 
 async function mountPlayer(ctx, index) {
   destroyPlayer();
+  ctx.failShown = false; ctx.played = false;
   const src = ctx.sources[index];
   const stage = $('#stage');
   ctx.mode = 'player'; ctx.index = index;
@@ -1222,22 +1535,42 @@ async function mountPlayer(ctx, index) {
       if (video.canPlayType('application/vnd.apple.mpegurl')) { video.src = url; return; }
       stageError(ctx, 'HLS oynatıcısı yüklenemedi. İnternet bağlantını kontrol et.'); return;
     }
-    p.hls = new Hls({maxBufferLength: 60});
+    p.hls = new Hls({maxBufferLength: 30, capLevelToPlayerSize: true});
     p.hls.loadSource(url);
     p.hls.attachMedia(video);
-    p.hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) stageError(ctx, 'Akış oynatılamadı (HLS hatası).'); });
+    let recovered = 0;
+    p.hls.on(Hls.Events.MANIFEST_PARSED, () => {
+      const levels = p.hls?.levels || [];
+      const ok = levels.map((l, i) => ({l, i})).filter(({l}) => !/hvc1|hev1|dvh1|av01/i.test(`${l.videoCodec || ''} ${l.attrs?.CODECS || ''}`) && (!l.height || l.height <= 1080));
+      if (ok.length && p.hls) p.hls.currentLevel = ok[ok.length - 1].i;
+      if (levels.length > 1 && p.art) {
+        const label = (l, i) => l.height ? `${l.height}p` : `Seviye ${i + 1}`;
+        const setting = {name: 'quality', html: 'Kalite', tooltip: 'Otomatik', selector: [{html: 'Otomatik', auto: true}, ...levels.map((l, i) => ({html: label(l, i), i, default: p.hls.currentLevel === i}))],
+          onSelect(item) { if (p.hls) p.hls.currentLevel = item.auto ? -1 : item.i; return item.html; }};
+        try { p.art.setting.add(setting); } catch {}
+      }
+    });
+    p.hls.on(Hls.Events.ERROR, (_, d) => {
+      if (player !== p || !d.fatal || !p.hls) return;
+      if (recovered < 1 && d.type === Hls.ErrorTypes.MEDIA_ERROR) { recovered++; p.hls.recoverMediaError(); return; }
+      if (recovered < 1 && d.type === Hls.ErrorTypes.NETWORK_ERROR) { recovered++; p.hls.startLoad(); return; }
+      try { p.hls.destroy(); } catch {}
+      p.hls = null;
+      stageError(ctx, 'Akış oynatılamadı.');
+    });
     // Çok sesli akışlar (ör. dublaj kaynaklarında Türkçe + İngilizce): tercihe göre ses izini seç, ayarlara "Ses" ekle
     p.hls.on(Hls.Events.AUDIO_TRACKS_UPDATED, (_, d) => {
+      if (player !== p || !p.hls) return;
       const tracks = d.audioTracks || [];
       if (tracks.length < 2) return;
-      const isTr = t => /^(tr|tur)\b/i.test(t.lang || '') || /türk|turk/i.test(t.name || '');
+      const isTr = isTurkishAudio;
       const trI = tracks.findIndex(isTr);
-      const want = store.get('preferDub', true) ? trI : tracks.findIndex(t => !isTr(t));
+      const want = wantsDub(ctx) ? trI : tracks.findIndex(t => !isTr(t));
       if (want >= 0 && p.hls.audioTrack !== want) p.hls.audioTrack = want;
       const label = (t, i) => t.name || t.lang || `Ses ${i + 1}`;
       const setting = {name: 'audio', html: 'Ses', tooltip: label(tracks[p.hls.audioTrack] || tracks[0], p.hls.audioTrack),
         selector: tracks.map((t, i) => ({html: label(t, i), i, default: i === p.hls.audioTrack})),
-        onSelect(item) { p.hls.audioTrack = item.i; return item.html; }};
+        onSelect(item) { if (player !== p || !p.hls) return item.html; p.hls.audioTrack = item.i; store.set('preferDub', isTr(tracks[item.i])); paintWatchOpts(ctx); return item.html; }};
       setTimeout(() => { try { if (!p.art) return; if (p.audioSetting) p.art.setting.update(setting); else p.art.setting.add(setting); p.audioSetting = true; } catch {} }, 0);
     });
   };
@@ -1245,12 +1578,12 @@ async function mountPlayer(ctx, index) {
     if (!Dash?.MediaPlayer) { stageError(ctx, 'DASH oynatıcısı yüklenemedi. İnternet bağlantını kontrol et.'); return; }
     p.dash = Dash.MediaPlayer().create();
     p.dash.initialize(video, url, false);
-    p.dash.on(Dash.MediaPlayer.events.ERROR, () => stageError(ctx, 'Akış oynatılamadı (DASH hatası).'));
+    p.dash.on(Dash.MediaPlayer.events.ERROR, () => { if (player === p) stageError(ctx, 'Akış oynatılamadı (DASH hatası).'); });
   };
   let video;
   if (Art) {
     $('#art').innerHTML = '';
-    Art.NOTICE_TIME = 2500;
+    Art.NOTICE_TIME = 0;
     p.art = new Art({
       container: '#art', url: src.url, poster: ctx.a.backdrop || '', type: isHls ? 'm3u8' : isDash ? 'mpd' : '',
       customType: {m3u8: (v, url) => attachHls(v, url), mpd: (v, url) => attachDash(v, url)},
@@ -1264,6 +1597,11 @@ async function mountPlayer(ctx, index) {
       controls: nextOf(ctx) ? [{position: 'left', index: 15, html: '<svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor"><path d="M6 5v14l9-7zM16 5h2v14h-2z"/></svg>', tooltip: 'Sonraki bölüm', click: () => { const n = nextOf(ctx); if (n) go(ctx, n.s, n.e); }}] : [],
     });
     p.art.on('video:volumechange', () => store.set('volume', p.art.volume));
+    p.art.on('play', () => {
+      if (!store.get('autoFs', false) || p.fsTried) return;
+      p.fsTried = true;
+      try { p.art.fullscreen = true; } catch { try { p.art.fullscreenWeb = true; } catch {} }
+    });
     video = p.art.video;
     p.cleanup.push(() => p.art.destroy(false));
   } else {
@@ -1278,10 +1616,14 @@ async function mountPlayer(ctx, index) {
     if (isHls) attachHls(video, src.url); else if (isDash) attachDash(video, src.url); else video.src = src.url;
   }
   p.video = video;
+  const selectNativeAudio = () => { if (player === p && !p.hls) selectPlayerAudio(p, wantsDub(ctx)); };
+  video.addEventListener('loadedmetadata', selectNativeAudio);
+  video.audioTracks?.addEventListener('addtrack', selectNativeAudio);
+  p.cleanup.push(() => { video.removeEventListener('loadedmetadata', selectNativeAudio); video.audioTracks?.removeEventListener('addtrack', selectNativeAudio); });
   setupSkip(ctx, video, p);
   // Türkçe altyazısı olmayan yabancı kaynaklara Türkçe altyazı ekle (sunucuda Wyzie anahtarı varsa)
   if (p.art && SUBS_ON && src.lang !== 'tr' && !subs.some(t => t.lang === 'tr') && !isAnimeArchive(src)) addTurkishSubs(ctx, p, subs);
-  video.addEventListener('timeupdate', () => { if (video.currentTime > 20) srcMemory.set(ctx.a, 'source', src.name); }, {once: false, passive: true});
+  video.addEventListener('timeupdate', () => { if (video.currentTime > 2) ctx.played = true; if (video.currentTime > 20) srcMemory.set(ctx.a, 'source', src.name); }, {once: false, passive: true});
 
   const k = `${keyOf(ctx.a)}:${ctx.s}:${ctx.e}`;
   let lastSave = 0;
@@ -1292,7 +1634,7 @@ async function mountPlayer(ctx, index) {
   const persist = () => saveProgress(ctx.a, ctx.s, ctx.e, video.currentTime, video.duration);
   video.addEventListener('timeupdate', () => { if (Date.now() - lastSave > 5000) { lastSave = Date.now(); persist(); } });
   video.addEventListener('pause', persist);
-  video.addEventListener('error', () => stageError(ctx, src.type === 'mkv' ? 'Bu MKV dosyası tarayıcıda açılamadı. MP4 (H.264 + AAC) olarak dönüştürmeyi dene.' : 'Video açılamadı. Dosya biçimi tarayıcı tarafından desteklenmiyor olabilir.'));
+  video.addEventListener('error', () => { if (player === p && (!isHls && !isDash || isHls && !p.hls)) stageError(ctx, src.type === 'mkv' ? 'Bu MKV dosyası tarayıcıda açılamadı. MP4 (H.264 + AAC) olarak dönüştürmeyi dene.' : 'Video açılamadı.'); });
   video.addEventListener('ended', () => { persist(); const n = nextOf(ctx); if (n) nextUp(ctx, n); });
   p.cleanup.push(persist);
 }
@@ -1334,8 +1676,16 @@ function setupSkip(ctx, video, p) {
     } catch {}
   }, {once: true});
   const done = new Set();
+  let meta = false;
+  video.addEventListener('loadedmetadata', () => { meta = true; }, {once: true});
   const onTime = () => {
     const t = video.currentTime, cur = ranges.find(x => t >= x.start && t < x.end - 1);
+    if (!cur && meta && !ranges.length && t > 4 && t < 90) {
+      btn.hidden = false;
+      btn.textContent = 'İntroyu atla ›';
+      btn.onclick = () => { video.currentTime = 90; btn.hidden = true; };
+      return;
+    }
     if (!cur) { btn.hidden = true; return; }
     if (store.get('autoSkip', false) && !done.has(cur.start)) { done.add(cur.start); video.currentTime = cur.end; toast(`${label(cur.type).replace(' atla', '')} atlandı`); return; }
     btn.hidden = false;
@@ -1364,25 +1714,32 @@ function nextUp(ctx, n) {
   player?.cleanup.push(() => clearInterval(t));
 }
 function stageError(ctx, msg) {
-  const box = document.createElement('div');
-  box.className = 'stage-error';
-  const more = (ctx.mode === 'player' && (ctx.sources[ctx.index + 1] || ctx.embeds?.length)) || (ctx.mode === 'embed' && ctx.embeds?.[ctx.index + 1]);
-  box.innerHTML = `<p>${esc(msg)}</p>${more ? '<button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>' : ''}`;
-  $('[data-next-src]', box)?.addEventListener('click', () => nextSource(ctx));
-  $('#stage .stage-inner')?.append(box);
-  // Doğrudan kaynak hiç oynamadan hata verdiyse sıradakine kendiliğinden geç (en fazla 4 kez; döngü olmaz)
-  const at = ctx.index, p = player;
-  if (more && ctx.mode === 'player' && !(p?.video?.currentTime > 1) && (ctx.autoSkips || 0) < 4) {
+  if (ctx.v !== routeId || ctx.failShown) return;
+  ctx.failShown = true;
+  const more = nextCandidate(ctx), at = ctx.index, p = player;
+  if (more && ctx.mode === 'player' && !ctx.played && !(p?.video?.currentTime > 1) && (ctx.autoSkips || 0) < 1) {
     ctx.autoSkips = (ctx.autoSkips || 0) + 1;
-    setTimeout(() => { if (player === p && ctx.mode === 'player' && ctx.index === at && ctx.v === routeId) { toast('Kaynak açılmadı, sıradakine geçiliyor'); nextSource(ctx); } }, 1800);
+    const timer = setTimeout(() => {
+      if (player === p && ctx.index === at && ctx.v === routeId) nextSource(ctx);
+    }, 300);
+    p?.cleanup.push(() => clearTimeout(timer));
+    return;
   }
+  const box = document.createElement('div');
+  box.className = 'stage-error'; box.setAttribute('role', 'alert');
+  box.innerHTML = `<p>${esc(msg)}</p><button type="button" class="btn btn-sm btn-ghost" data-retry-source>Yeniden dene</button>${more ? '<button type="button" class="btn btn-sm btn-play" data-next-src>Sonraki kaynağı dene</button>' : ''}`;
+  $('[data-next-src]', box)?.addEventListener('click', () => nextSource(ctx));
+  $('[data-retry-source]', box).addEventListener('click', () => ctx.mode === 'player' ? mountPlayer(ctx, ctx.index) : mountEmbed(ctx, ctx.index));
+  $('#stage .stage-inner')?.append(box);
 }
+
 function destroyPlayer() {
   if (!player) return;
-  player.cleanup.slice().reverse().forEach(f => { try { f(); } catch {} });
-  try { player.hls?.destroy(); } catch {}
-  try { player.dash?.reset(); } catch {}
-  if (!player.art && player.video) { try { player.video.pause(); player.video.removeAttribute('src'); player.video.load(); } catch {} }
+  const previous = player; player = null;
+  previous.cleanup.slice().reverse().forEach(f => { try { f(); } catch {} });
+  try { previous.hls?.destroy(); } catch {}
+  try { previous.dash?.reset(); } catch {}
+  if (!previous.art && previous.video) { try { previous.video.pause(); previous.video.removeAttribute('src'); previous.video.load(); } catch {} }
   player = null;
 }
 
@@ -1401,6 +1758,8 @@ $('#trailer-dialog').addEventListener('click', e => { if (e.target.id === 'trail
 const sd = $('#search-dialog'), si = $('#search-input'), sr = $('#search-results');
 let searchSeq = 0, searchTimer;
 function openSearch() {
+  const app = document.documentElement.dataset.app;
+  if (app === 'hub' || app === 'lovellify') return;
   const live = $('#livetv-search');
   if (live && document.documentElement.dataset.section === 'livetv') { live.focus(); live.scrollIntoView({block: 'center', behavior: reduceMotion ? 'auto' : 'smooth'}); return; }
   if (!sd.open) sd.showModal();
@@ -1462,9 +1821,31 @@ document.addEventListener('keydown', e => {
 // ---------------- Hamburger menü ----------------
 const hamburger = $('#hamburger');
 const mainNav = $('#main-nav');
+const sideToggle = $('#side-toggle');
+function paintSide(rail) {
+  document.documentElement.dataset.side = rail ? 'rail' : 'open';
+  sideToggle?.setAttribute('aria-expanded', String(!rail));
+  sideToggle?.setAttribute('aria-label', rail ? 'Menüyü aç' : 'Menüyü daralt');
+}
+if (sideToggle) {
+  paintSide(!!store.get('sideRail', false));
+  sideToggle.onclick = () => {
+    const rail = document.documentElement.dataset.side !== 'rail';
+    store.set('sideRail', rail);
+    paintSide(rail);
+  };
+}
+$('#side')?.addEventListener('click', e => {
+  if (e.target.closest('a') && matchMedia('(max-width: 860px)').matches) {
+    $('#side')?.classList.remove('open');
+    mainNav?.classList.remove('open');
+    hamburger?.setAttribute('aria-expanded', 'false');
+  }
+});
 if (hamburger && mainNav) {
   hamburger.onclick = () => {
     const open = mainNav.classList.toggle('open');
+    $('#side')?.classList.toggle('open', open);
     hamburger.setAttribute('aria-expanded', String(open));
     // aria-modal yalnızca role="dialog" üzerinde anlamlı; <nav> üzerinde kullanılmaz.
     // Odak yönetimi: menü açıldığında ilk nav linkine odaklan
@@ -1477,6 +1858,7 @@ if (hamburger && mainNav) {
   mainNav.addEventListener('click', e => {
     if (e.target.closest('a')) {
       mainNav.classList.remove('open');
+      $('#side')?.classList.remove('open');
       hamburger.setAttribute('aria-expanded', 'false');
     }
   });
@@ -1496,31 +1878,55 @@ if (hamburger && mainNav) {
 
 // ---------------- Tema ----------------
 function themeLabel() {
-  const light = document.documentElement.dataset.theme === 'light';
-  $('#theme').setAttribute('aria-label', light ? 'Koyu temaya geç' : 'Açık temaya geç');
-  $('#theme').title = light ? 'Koyu tema' : 'Açık tema';
+  const t = document.documentElement.dataset.theme;
+  const label = t === 'kitty' ? 'Koyu temaya geç' : t === 'light' ? 'Hello Kitty temasına geç' : 'Açık temaya geç';
+  $('#theme')?.setAttribute('aria-label', label);
+  if ($('#theme')) $('#theme').title = t === 'kitty' ? 'Hello Kitty' : t === 'light' ? 'Açık tema' : 'Koyu tema';
 }
 const sysLight = matchMedia('(prefers-color-scheme: light)');
-const themeMode = () => { try { const t = localStorage.getItem('lovell.theme'); return ['system', 'light', 'dark'].includes(t) ? t : 'dark'; } catch { return 'dark'; } };
-function applyTheme(mode) {
+const themeMode = () => { try { const t = localStorage.getItem('lovell.theme'); return ['system', 'light', 'dark', 'kitty'].includes(t) ? t : 'dark'; } catch { return 'dark'; } };
+function applyTheme(mode, persist = true) {
   try { localStorage.setItem('lovell.theme', mode); } catch {}
-  document.documentElement.dataset.theme = mode === 'light' || (mode === 'system' && sysLight.matches) ? 'light' : 'dark';
+  document.documentElement.dataset.theme = mode === 'kitty' ? 'kitty' : mode === 'light' || (mode === 'system' && sysLight.matches) ? 'light' : 'dark';
   themeLabel();
+  if (persist && profile) {
+    profile.prefs = {...(profile.prefs || {}), ...skinPrefs(), theme: mode};
+    store.set('profileMeta', profile);
+    scheduleSync();
+  }
+}
+function skinPrefs() {
+  return {theme: themeMode(), accent: store.get('accent', '') || '', wall: store.get('wall', '') || ''};
+}
+function applySkin(accent, wall) {
+  const root = document.documentElement;
+  const acc = /^#[0-9A-Fa-f]{6}$/.test(accent || '') ? accent : '';
+  store.set('accent', acc);
+  if (acc) { root.style.setProperty('--user-accent', acc); root.dataset.accent = '1'; }
+  else { root.style.removeProperty('--user-accent'); delete root.dataset.accent; }
+  const okWall = wall && (String(wall).startsWith('https://') || String(wall).startsWith('data:image/')) ? wall : '';
+  store.set('wall', okWall);
+  if (okWall) { root.style.setProperty('--user-wall', `url("${okWall.replace(/"/g, '')}")`); root.dataset.wall = '1'; }
+  else { root.style.removeProperty('--user-wall'); delete root.dataset.wall; }
+}
+function applyPrefs(prefs) {
+  if (!prefs || typeof prefs !== 'object') return;
+  if (prefs.theme) applyTheme(prefs.theme, false);
+  applySkin(prefs.accent, prefs.wall);
 }
 sysLight.addEventListener('change', () => { if (themeMode() === 'system') applyTheme('system'); });
-$('#theme').onclick = () => applyTheme(document.documentElement.dataset.theme === 'light' ? 'dark' : 'light');
+$('#theme').onclick = () => {
+  const now = document.documentElement.dataset.theme;
+  applyTheme(now === 'dark' ? 'light' : now === 'light' ? 'kitty' : 'dark');
+};
 themeLabel();
 
 // ---------------- Durum ----------------
 function setStatus(source) {
   const el = $('#data-status');
-  if (!source) return;
+  if (!el || !source) return;
   el.dataset.src = source;
   el.textContent = source === 'TMDB' ? 'Veri kaynağı: TMDB' : source === 'AniList' ? 'TMDB kullanılamıyor, AniList gösteriliyor' : 'TMDB ve AniList kullanılamıyor, yerel seçki gösteriliyor';
-  if (source !== 'TMDB') api('/api/status').then(s => {
-    if (s.tmdb === 'anahtar geçersiz') el.textContent += '. Sebep: TMDB API anahtarı geçersiz, .env dosyasına kendi anahtarını yaz.';
-    else if (s.dataErrors?.[0]) el.textContent += `. Sebep: ${s.dataErrors.find(x => x.source === 'TMDB')?.error || s.dataErrors[0].error}`;
-  }).catch(() => {});
 }
 
 // ---------------- Canlı TV ----------------
@@ -1901,15 +2307,20 @@ document.addEventListener('click', e => {
   const el = e.target.closest?.('.qa-btn[data-list], [data-info], [data-forget]');
   if (!el) return;
   e.preventDefault(); e.stopPropagation();
-  if (el.dataset.info) return openInfo(el.dataset.info);
+  if (el.dataset.info) {
+    const card = el.closest('.card, .land, .rank');
+    if (card && !el.closest('.peek')) return showPeek(card);
+    hidePeek(true);
+    return openInfo(el.dataset.info);
+  }
   if (el.dataset.list) { const a = ITEMS.get(el.dataset.list) || myList.find(x => keyOf(x) === el.dataset.list); if (a) toggleList(a); return; }
   if (el.dataset.forget) {
     const k = el.dataset.forget, saved = recent[k];
-    delete recent[k]; store.set('recent', recent);
+    delete recent[k]; store.set('recent', recent); scheduleSync();
     const cardEl = el.closest('.wide');
     cardEl?.classList.add('leaving');
     setTimeout(() => { const row = cardEl?.closest('.shelf, .list-group'); cardEl?.remove(); if (row && !$('.wide', row)) row.remove(); }, reduceMotion ? 0 : 260);
-    toast('Devam et satırından kaldırıldı', 'info', {label: 'Geri al', fn: () => { recent[k] = saved; store.set('recent', recent); route(); }});
+    toast('Devam et satırından kaldırıldı', 'info', {label: 'Geri al', fn: () => { recent[k] = saved; store.set('recent', recent); scheduleSync(); route(); }});
   }
 }, true);
 
@@ -2032,7 +2443,7 @@ function syncBottomNav(part = (location.hash.replace(/^#\/?/, '').split(/[/?]/)[
     return;
   }
   const items = [
-    ['home', '#/', S().nav.home, '<path d="M3 10.5 12 4l9 6.5V20h-6v-5H9v5H3z"/>'],
+    ['home', '#/watch', S().nav.home, '<path d="M3 10.5 12 4l9 6.5V20h-6v-5H9v5H3z"/>'],
     ['kesfet', '#/kesfet', S().nav.kesfet, '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/>'],
     ['filmler', '#/filmler', section === 'anime' ? 'Filmler' : S().nav.filmler, '<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 8h16M4 16h16M9 3v5M15 3v5M9 16v5M15 16v5"/>'],
     ['ara', null, 'Ara', '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>'],
@@ -2057,6 +2468,7 @@ function bindWatchExtras(ctx) {
     toast(on ? 'Sinema modu açık' : 'Sinema modu kapalı');
   });
   $('#panel-toggle')?.addEventListener('click', () => cin.classList.toggle('no-panel'));
+  paintWatchOpts(ctx);
   const find = $('#ep-find');
   if (find) find.addEventListener('input', () => {
     const q = find.value.trim().toLocaleLowerCase('tr');
@@ -2082,6 +2494,47 @@ function updateEpNav(ctx) {
   const t = x => { const ep = x && x.s === ctx.s ? ctx.episodes.find(y => y.n === x.e) : null; return ep && !/^Bölüm \d+$/.test(ep.title) ? ep.title : ''; };
   nav.hidden = !p && !n;
   nav.innerHTML = `${p ? `<a class="ep-step prev" href="${watchHref(ctx.a, p.s, p.e)}"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg><span><small>Önceki bölüm</small><b>${p.s}. sezon ${p.e}. bölüm${t(p) ? ` · ${esc(t(p))}` : ''}</b></span></a>` : ''}${n ? `<a class="ep-step next" href="${watchHref(ctx.a, n.s, n.e)}"><span><small>Sonraki bölüm</small><b>${n.s}. sezon ${n.e}. bölüm${t(n) ? ` · ${esc(t(n))}` : ''}</b></span><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></a>` : ''}`;
+  const jump = $('#watch-jump');
+  if (jump) jump.innerHTML = `${p ? `<a class="btn btn-ghost btn-sm" href="${watchHref(ctx.a, p.s, p.e)}">‹ Önceki</a>` : ''}<span class="badge-ep">${isMovie(ctx.a) ? 'Film' : `${ctx.e}. bölüm`}</span>${n ? `<a class="btn btn-play btn-sm" href="${watchHref(ctx.a, n.s, n.e)}">Sonraki ›</a>` : ''}`;
+}
+
+function paintWatchOpts(ctx) {
+  const dub = wantsDub(ctx);
+  $$('#audio-toggle [data-audio]').forEach(b => b.classList.toggle('on', (b.dataset.audio === 'dub') === dub));
+  $$('#audio-toggle [data-audio]').forEach(b => b.onclick = () => applyAudio(ctx, b.dataset.audio));
+}
+
+function isTurkishAudio(t) {
+  return /^(tr|tur)(?:[-_]|$)/i.test(t.lang || t.language || '') || /türk|turk/i.test(t.name || t.label || '');
+}
+function selectPlayerAudio(p, wantDub) {
+  if (!p) return false;
+  const tracks = p.hls?.audioTracks || Array.from(p.video?.audioTracks || []);
+  const index = tracks.findIndex(t => isTurkishAudio(t) === wantDub);
+  if (index < 0) return false;
+  if (p.hls) p.hls.audioTrack = index;
+  else tracks.forEach((t, i) => { t.enabled = i === index; });
+  return true;
+}
+function applyAudio(ctx, lang) {
+  const wantDub = lang === 'dub';
+  store.set(secOf(ctx.a) === 'anime' ? 'preferDubAnime' : 'preferDub', wantDub);
+  paintWatchOpts(ctx);
+  if (ctx.mode === 'player' && selectPlayerAudio(player, wantDub)) {
+    if (wantDub && player.art) player.art.subtitle.show = false;
+    toast(wantDub ? 'Türkçe ses seçildi' : 'Orijinal ses seçildi');
+    return;
+  }
+  const direct = ctx.sources || [];
+  const sourceIndex = direct.findIndex(s => wantDub ? s.dub === true : !s.dub && s.lang === 'tr');
+  if (sourceIndex >= 0) { if (ctx.mode !== 'player' || ctx.index !== sourceIndex) mountPlayer(ctx, sourceIndex); return; }
+  const list = ctx.embeds || [];
+  const i = list.findIndex(e => wantDub ? (e.lang === 'tr-dub' || (e.dub && (e.lang === 'tr' || e.tr))) : (e.lang === 'sub' || (e.tr && !e.dub)));
+  if (i < 0) { paintWatchOpts(ctx); toast(ctx.remote === 'loading' ? 'Kaynak araması sürüyor; tamamlandığında tekrar deneyebilirsin' : wantDub ? 'Bu bölümde doğrulanmış Türkçe dublaj kaynağı yok' : 'Türkçe altyazılı kaynak yok'); return; }
+  const e = list[i];
+  store.set('embedPref', {id: e.id, lang: e.lang || (wantDub ? 'dub' : 'sub')});
+  paintWatchOpts(ctx);
+  mountEmbed(ctx, i);
 }
 
 // ---- Arama: boşken son aramalar ve öne çıkanlar ----
@@ -2124,8 +2577,10 @@ document.addEventListener('keydown', e => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement?.tagName) || document.activeElement?.isContentEditable;
   if (typing || e.ctrlKey || e.metaKey || e.altKey || $('dialog[open], .livetv-modal')) return;
   const watch = /^#\/izle\//.test(location.hash);
+  const app = document.documentElement.dataset.app;
   if (e.key === '?') { e.preventDefault(); openShortcuts(); }
   else if (e.key === ',') { e.preventDefault(); openSettings(); }
+  else if (app === 'hub' || app === 'lovellify' || app === 'speedfy') return;
   else if (e.key.toLowerCase() === 'g' && !watch) location.hash = '#/listem?g=gecmis';
   else if (['1', '2', '3'].includes(e.key)) $(`.tab-btn[data-tab="${['anime', 'media', 'livetv'][Number(e.key) - 1]}"]`)?.click();
   else if (e.key.toLowerCase() === 't' && watch) $('#theater')?.click();
@@ -2240,7 +2695,6 @@ document.addEventListener('pointerdown', e => {
 }, {passive: true});
 
 // ---- Üzerine gelince büyüyen önizleme kartı (yalnızca fareyle) ----
-const canHover = matchMedia('(hover: hover) and (pointer: fine)');
 const peek = {el: null, src: null, timer: 0, hideTimer: 0, key: ''};
 function peekEl() {
   if (peek.el) return peek.el;
@@ -2307,28 +2761,15 @@ function showPeek(src) {
     $$('.peek-body > *', el).forEach((c, i) => c.animate([{opacity: 0, transform: 'translateY(8px)'}, {opacity: 1, transform: 'none'}], {duration: 320, delay: 120 + i * 45, easing: 'cubic-bezier(.22,1,.36,1)', fill: 'backwards'}));
   }
 }
-document.addEventListener('mouseover', e => {
-  if (!canHover.matches || innerWidth < 900) return;
-  const src = e.target.closest?.('#main .row .card, #main .row .land, #main .row .rank, #main .grid .card, #main .grid .land');
-  if (!src) return;
-  if (src === peek.src && peek.key) { clearTimeout(peek.hideTimer); return; }
-  clearTimeout(peek.timer);
-  // Kısa bir bekleme: fare kartların üzerinden geçerken her birinde açılmasın.
-  peek.timer = setTimeout(() => { if (src.matches(':hover')) showPeek(src); }, peek.key ? 160 : 480);
-});
-document.addEventListener('mouseout', e => {
-  const src = e.target.closest?.('.card, .land, .rank');
-  if (!src || src.contains(e.relatedTarget)) return;
-  if (e.relatedTarget && peek.el?.contains(e.relatedTarget)) return;
-  clearTimeout(peek.timer);
-  if (src === peek.src) hidePeekSoon();
+document.addEventListener('click', e => {
+  if (!peek.key) return;
+  if (e.target.closest?.('.peek, [data-info]')) return;
+  hidePeek(true);
 });
 addEventListener('scroll', () => peek.key && hidePeek(true), {passive: true});
 addEventListener('blur', () => hidePeek(true));
 addEventListener('hashchange', () => hidePeek(true));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') hidePeek(); });
-// Detay penceresi açılınca önizleme kapanır.
-document.addEventListener('click', e => { if (e.target.closest?.('[data-info]')) hidePeek(true); }, true);
 // Satırlar yatay kayınca da kapat.
 document.addEventListener('scroll', e => { if (peek.key && e.target.classList?.contains('row')) hidePeek(true); }, {capture: true, passive: true});
 
@@ -2341,7 +2782,7 @@ const PREFS = [
   ['preferTr', 'Türkçe kaynakları önce aç', 'Türkçe altyazılı ya da dublajlı doğrudan kaynak bulunursa oynatma onunla başlar.'],
   ['preferDub', 'Türkçe dublajı altyazıya tercih et', 'Hem dublaj hem altyazılı Türkçe kaynak varsa dublajlı olan açılır.'],
 ];
-const THEMES = [['system', 'Sistem'], ['dark', 'Koyu'], ['light', 'Açık']];
+const THEMES = [['system', 'Sistem'], ['dark', 'Koyu'], ['light', 'Açık'], ['kitty', 'Hello Kitty']];
 function openSettings() {
   let d = $('#settings');
   if (!d) {
@@ -2355,14 +2796,20 @@ function openSettings() {
   d.innerHTML = `<div class="settings-card">
     <header class="settings-head"><h2 id="settings-title">Ayarlar</h2><button class="icon-btn" type="button" data-close aria-label="Kapat"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg></button></header>
     <section class="set-sec"><h3>Görünüm</h3>
-      <div class="set-row"><span><strong>Tema</strong><small>“Sistem” cihazının açık / koyu ayarını izler.</small></span><div class="seg" role="radiogroup" aria-label="Tema">${THEMES.map(([k, t]) => `<button type="button" role="radio" aria-checked="${themeMode() === k}" data-theme-set="${k}">${t}</button>`).join('')}</div></div>
+      <div class="set-row"><span><strong>Tema</strong><small>Koyu, açık veya Hello Kitty. Sistem cihazın ayarını izler.</small></span><div class="seg" role="radiogroup" aria-label="Tema">${THEMES.map(([k, t]) => `<button type="button" role="radio" aria-checked="${themeMode() === k}" data-theme-set="${k}">${t}</button>`).join('')}</div></div>
+      <label class="set-row"><span><strong>Renk paleti</strong><small>Bu anahtara özel vurgu rengi.</small></span><input type="color" id="set-accent" value="${esc(store.get('accent', '') || '#d61e2b')}"></label>
+      <label class="set-row"><span><strong>Arkaplan</strong><small>İsteğe bağlı bir görsel. Yalnızca bu profilde durur.</small></span><span class="actions"><input type="file" accept="image/jpeg,image/png,image/webp" id="set-wall" hidden><button class="btn btn-ghost btn-sm" type="button" data-wall-pick>Görsel seç</button><button class="btn btn-ghost btn-sm" type="button" data-wall-clear>Kaldır</button></span></label>
     </section>
     <section class="set-sec"><h3>Oynatma</h3>
       ${PREFS.map(([k, t, sub, def = true]) => `<label class="set-row"><span><strong>${t}</strong><small>${sub}</small></span><input type="checkbox" role="switch" class="switch" data-pref="${k}" ${store.get(k, def) ? 'checked' : ''}></label>`).join('')}
     </section>
+    <section class="set-sec"><h3>Profil</h3>
+      <p class="set-note">${profileKey ? `İzleyeceklerim listesi <b>${esc(profile?.name || 'Profil')}</b> anahtarına bağlı. Anahtarı bilen her cihaz aynı listeyi görür.` : 'Anahtarın yokken liste yalnızca bu tarayıcıda durur. Anahtar sana verilir; kendin üretemezsin.'}</p>
+      <div class="actions"><a class="btn btn-ghost btn-sm" href="#/profil">${profileKey ? 'Profili aç' : 'Anahtarımı gir'}</a></div>
+    </section>
     <section class="set-sec"><h3>Verilerin</h3>
       <p class="set-stats"><span><b>${list}</b> başlık listende</span><span><b>${hist}</b> başlık geçmişte</span><span><b>${favs}</b> favori kanal</span></p>
-      <p class="set-note">Her şey yalnızca bu tarayıcıda saklanır. Başka bir cihaza taşımak için dışa aktarıp orada içe aktar.</p>
+      <p class="set-note">${profileKey ? 'Yedek dosyası anahtarın yanında durur. Başka bir profile aktarmak için de kullanabilirsin.' : 'Başka bir cihaza dosyayla taşımak için dışa aktarıp orada içe aktar.'}</p>
       <div class="actions">
         <button class="btn btn-ghost btn-sm" type="button" data-export><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8M5 7l3 3 3-3M3 12.5h10"/></svg>Dışa aktar</button>
         <label class="btn btn-ghost btn-sm"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2M5 5l3-3 3 3M3 12.5h10"/></svg>İçe aktar<input type="file" accept="application/json,.json" data-import hidden></label>
@@ -2379,6 +2826,8 @@ function openSettings() {
     if (!b) return;
     if (b.hasAttribute('data-close')) d.close();
     else if (b.dataset.themeSet) { applyTheme(b.dataset.themeSet); $$('[data-theme-set]', d).forEach(x => x.setAttribute('aria-checked', String(x === b))); }
+    else if (b.hasAttribute('data-wall-pick')) $('#set-wall')?.click();
+    else if (b.hasAttribute('data-wall-clear')) { applySkin(store.get('accent', ''), ''); if (profile) { profile.prefs = skinPrefs(); store.set('profileMeta', profile); scheduleSync(); } toast('Arkaplan kaldırıldı', 'success'); }
     else if (b.hasAttribute('data-export')) exportData();
     else if (b.hasAttribute('data-clear-hist')) { d.close(); clearHistory(true); }
     else if (b.hasAttribute('data-clear-search')) { store.set('searches', []); toast('Arama geçmişi silindi', 'success'); }
@@ -2386,6 +2835,21 @@ function openSettings() {
     else if (b.hasAttribute('data-keys')) { d.close(); openShortcuts(); }
   };
   $$('[data-pref]', d).forEach(c => c.onchange = () => { store.set(c.dataset.pref, c.checked); if (c.dataset.pref === 'heroTrailer' && !c.checked) { $('.hero-trailer')?.remove(); $('.hero')?.classList.remove('trailer-on'); } });
+  $('#set-accent')?.addEventListener('input', e => {
+    applySkin(e.target.value, store.get('wall', ''));
+    if (profile) { profile.prefs = {...skinPrefs(), theme: themeMode()}; store.set('profileMeta', profile); scheduleSync(); }
+  });
+  $('#set-wall')?.addEventListener('change', e => {
+    const f = e.target.files?.[0];
+    if (!f || f.size > 70000) { if (f) toast('Görsel 70 KB’dan küçük olsun', 'error'); return; }
+    const reader = new FileReader();
+    reader.onload = () => {
+      applySkin(store.get('accent', ''), String(reader.result || ''));
+      if (profile) { profile.prefs = {...skinPrefs(), theme: themeMode()}; store.set('profileMeta', profile); scheduleSync(); }
+      toast('Arkaplan kaydedildi', 'success');
+    };
+    reader.readAsDataURL(f);
+  });
   $('[data-import]', d).onchange = e => { const f = e.target.files?.[0]; if (f) importData(f).then(() => { d.close(); }); };
   if (!d.open) d.showModal();
 }
@@ -2409,16 +2873,914 @@ async function importData(file) {
     if (d.recent && typeof d.recent === 'object') for (const [k, r] of Object.entries(d.recent)) if (valid(r?.item) && !(recent[k]?.at > r.at)) recent[k] = {item: slim(r.item), s: Number(r.s) || 1, e: Number(r.e) || 1, at: Number(r.at) || 0};
     if (Array.isArray(d.liveFav)) store.set('liveFav', [...new Set([...liveFavs(), ...d.liveFav.filter(u => typeof u === 'string')])]);
     store.set('list', myList); store.set('progress', progress); store.set('recent', recent);
+    scheduleSync();
     updateCount(); syncBottomNav();
     toast(`${added.length} yeni başlık listene eklendi`, 'success');
     route();
   } catch (e) { toast(`İçe aktarılamadı: ${e.message}`, 'error'); }
 }
 
+// ---- Profil ----
+const AVATAR_COLORS = ['#e4202b', '#7c5cff', '#1f8a70', '#d97706', '#2563eb', '#db2777', '#0f766e', '#b45309'];
+function fileToAvatar(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !/^image\/(jpeg|png|webp)$/.test(file.type)) { reject(new Error('Yalnızca JPEG, PNG veya WebP seç')); return; }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const canvas = document.createElement('canvas');
+      canvas.width = 128;
+      canvas.height = 128;
+      const side = Math.min(img.width, img.height) || 1;
+      canvas.getContext('2d').drawImage(img, (img.width - side) / 2, (img.height - side) / 2, side, side, 0, 0, 128, 128);
+      const data = canvas.toDataURL('image/jpeg', 0.72);
+      if (!data.startsWith('data:image/jpeg') || data.length > 80000) reject(new Error('Fotoğraf çok büyük'));
+      else resolve(data);
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('Fotoğraf okunamadı')); };
+    img.src = url;
+  });
+}
+function viewProfile() {
+  document.title = 'Profil — LOVELL';
+  if (!profileKey) {
+    main.innerHTML = `<div class="page profile-page"><header class="page-head"><div><p class="eyebrow">Hesap</p><h1>Profil anahtarı</h1></div><p>Anahtarı sana veren kişi üretir. Buraya yapıştırınca izleyeceklerim listen o profile bağlanır ve başka cihazda da açılır.</p></header>
+      <form class="profile-card" id="profile-join">
+        <h2>Anahtarını gir</h2>
+        <label class="field">Anahtar<input name="key" required placeholder="XXXX-XXXX-XXXX-XXXX-XXXX" autocapitalize="characters" spellcheck="false" autocomplete="off"></label>
+        <button class="btn btn-play" type="submit">Bu anahtarla aç</button>
+      </form>
+    </div>`;
+    $('#profile-join').onsubmit = async e => {
+      e.preventDefault();
+      const formatted = validProfileKey(new FormData(e.target).get('key'));
+      if (!formatted) { toast('Anahtar 20 karakter olmalı. I, O, 0 ve 1 kullanılmaz.', 'error'); return; }
+      const btn = $('button', e.target);
+      btn.disabled = true;
+      const prev = profileKey;
+      profileKey = formatted;
+      try {
+        const remote = await apiSend('/api/profile', 'GET');
+        myList = mergeLists(myList, remote.list);
+        progress = mergeProgress(progress, remote.progress);
+        recent = mergeRecent(recent, remote.recent);
+        persistUser();
+        profile = metaOf(remote);
+        syncBase = remote.updatedAt;
+        store.set('profileKey', profileKey);
+        store.set('profileMeta', profile);
+        store.set('syncBase', syncBase);
+        profileReady = true;
+        paintProfile();
+        await pushOnce();
+        toast(`${profile.name} profili açıldı`, 'success');
+        updateCount();
+        viewProfile();
+      } catch (err) {
+        profileKey = prev;
+        store.set('profileKey', prev);
+        if (!prev) { profile = null; store.set('profileMeta', null); }
+        paintProfile();
+        toast(err.message, 'error');
+        btn.disabled = false;
+      }
+    };
+    return;
+  }
+  const swatches = AVATAR_COLORS.map((c, i) => `<button type="button" class="swatch" style="background:${c}" data-color="${i}" role="radio" aria-checked="${Number(profile?.color) === i}" aria-label="Renk ${i + 1}"></button>`).join('');
+  main.innerHTML = `<div class="page profile-page"><header class="page-head"><div><p class="eyebrow">Profil</p><h1>${esc(profile?.name || 'Profil')}</h1></div><p>İzleyeceklerim listesi bu anahtara göre durur. Ad, fotoğraf ve renk de aynı anahtarla diğer cihazlara gider.</p></header>
+    <section class="profile-card profile-live">
+      <div class="profile-id">${avatarMarkup(profile, true)}
+        <div class="profile-customize">
+          <form id="profile-name" class="profile-rename"><label class="field">Görünen ad<input name="name" maxlength="24" value="${esc(profile?.name || '')}" required></label><button class="btn btn-ghost btn-sm" type="submit">Kaydet</button></form>
+          <div class="profile-photo">
+            <label class="btn btn-ghost btn-sm">Fotoğraf seç<input id="profile-photo" type="file" accept="image/jpeg,image/png,image/webp" hidden></label>
+            ${profile?.avatar ? '<button class="btn btn-ghost btn-sm" type="button" id="profile-photo-clear">Fotoğrafı kaldır</button>' : ''}
+          </div>
+          <div class="swatches" role="radiogroup" aria-label="Profil rengi">${swatches}</div>
+        </div>
+      </div>
+      <p class="set-stats"><span><b>${myList.length}</b> izleyeceklerim</span><span><b>${Object.keys(recent).length}</b> geçmiş</span></p>
+      <label class="field">Profil anahtarın<input id="profile-key" readonly value="${esc(profileKey)}"></label>
+      <div class="actions">
+        <button class="btn btn-play btn-sm" type="button" id="copy-key">Anahtarı kopyala</button>
+        <a class="btn btn-ghost btn-sm" href="#/listem">İzleyeceklerim</a>
+        <button class="btn btn-ghost btn-sm" type="button" id="profile-leave">Bu cihazdan çık</button>
+      </div>
+    </section>
+  </div>`;
+  $('#profile-name').onsubmit = e => {
+    e.preventDefault();
+    const name = String(new FormData(e.target).get('name') || '').replace(/\s+/g, ' ').trim().slice(0, 24);
+    if (!name) return;
+    profile = {...profile, name};
+    store.set('profileMeta', profile);
+    paintProfile();
+    scheduleSync();
+    toast('Ad kaydediliyor', 'success');
+    $('h1', main).textContent = name;
+    if (!profile.avatar) {
+      const big = $('.profile-id .avatar');
+      if (big) big.textContent = name.slice(0, 1).toLocaleUpperCase('tr');
+    }
+  };
+  $('#profile-photo').onchange = async e => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    try {
+      const avatar = await fileToAvatar(file);
+      profile = {...profile, avatar};
+      store.set('profileMeta', profile);
+      paintProfile();
+      scheduleSync();
+      toast('Fotoğraf kaydediliyor', 'success');
+      viewProfile();
+    } catch (err) { toast(err.message, 'error'); }
+  };
+  $('#profile-photo-clear')?.addEventListener('click', () => {
+    profile = {...profile, avatar: ''};
+    store.set('profileMeta', profile);
+    paintProfile();
+    scheduleSync();
+    toast('Fotoğraf kaldırılıyor', 'success');
+    viewProfile();
+  });
+  $$('.swatch', main).forEach(btn => btn.addEventListener('click', () => {
+    const color = Number(btn.dataset.color);
+    profile = {...profile, color};
+    store.set('profileMeta', profile);
+    paintProfile();
+    $$('.swatch', main).forEach(b => b.setAttribute('aria-checked', b === btn ? 'true' : 'false'));
+    const big = $('.profile-id .avatar');
+    if (big) big.dataset.c = String(color);
+    scheduleSync();
+  }));
+  $('#copy-key').onclick = async () => {
+    try { await navigator.clipboard.writeText(profileKey); toast('Anahtar kopyalandı', 'success'); }
+    catch { $('#profile-key')?.select?.(); toast('Anahtarı seçip kopyala', 'info'); }
+  };
+  $('#profile-leave').onclick = () => {
+    profileKey = '';
+    profile = null;
+    store.set('profileKey', '');
+    store.set('profileMeta', null);
+    store.set('syncDirty', false);
+    paintProfile();
+    fetch('/api/profile', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"leave":true}'}).catch(() => {});
+    document.documentElement.dataset.locked = '1';
+    const err = $('#entry-err'); if (err) err.textContent = '';
+    const text = $('#entry-text'); if (text) text.textContent = 'Araç kutusuna girmek için anahtarını yaz.';
+  };
+}
+
+// ---- Araç kutusu ----
+const TOOLS = [
+  {id: 'watch', href: '#/watch', kicker: 'İzle', title: 'İzle', mark: '01', line: 'Anime, film, dizi ve canlı yayın.'},
+  {id: 'lovellify', href: '#/lovellify', kicker: 'Müzik', title: 'Lovellify', mark: '02', line: 'ISRC, etiket, dağıtımcı.'},
+  {id: 'speedfy', href: '#/speedfy', kicker: 'Hız', title: 'Speedfy', mark: '03', line: 'WPM ve doğruluk.'},
+  {id: 'readfy', href: '#/readfy', kicker: 'Manga', title: 'Readfy', mark: '04', line: 'Kaldığın sayfadan devam.'},
+  {id: 'tavsiye', href: '#/tavsiye', kicker: 'Ruh hali', title: 'Tavsiye', mark: '05', line: 'Bugün ne izleyeceğin.'},
+];
+const DIST_SRC = {
+  youtube_provided_line: 'YouTube teslim satırı',
+  youtube_distribution_line: 'YouTube dağıtım satırı',
+  catalog_distribution_line: 'Katalog teslim satırı',
+  catalog_distribution_map: 'Katalog eşlemesi',
+  songstats_isrc: 'Songstats · ISRC',
+  metadata_consensus: 'Çoklu kaynak uzlaşması',
+  deezer_isrc: 'Deezer · ISRC',
+  deezer_catalog: 'Deezer katalog',
+  itunes_upc: 'iTunes · UPC',
+  itunes_catalog: 'iTunes katalog',
+  isrc_prefix: 'ISRC öneki',
+  spotify_label: 'Spotify etiketi',
+  spotify_licensor: 'Spotify lisansörü',
+  not_found: 'Dağıtımcı doğrulanamadı',
+};
+let musicState = {q: '', result: null, items: null, error: '', loading: false};
+let musicAudio = null;
+
+function setApp(app) {
+  document.documentElement.dataset.app = app;
+  if (app !== 'watch') document.documentElement.dataset.section = app;
+  if (app !== 'speedfy') delete document.documentElement.dataset.sf;
+}
+
+const TOOL_APPS = new Set(['lovellify', 'speedfy', 'readfy', 'tavsiye', 'tools']);
+
+function stopMusic() {
+  if (!musicAudio) return;
+  musicAudio.pause();
+  musicAudio = null;
+}
+
+function viewHub() {
+  document.title = 'LOVELL';
+  const name = profile?.name || 'LOVELL';
+  main.innerHTML = `<div class="hub">
+    <header class="hub-hero">
+      <p class="eyebrow">Araç kutusu</p>
+      <h1>${esc(name)}</h1>
+      <p>Beş araç. Bir anahtar.</p>
+    </header>
+    <div class="hub-grid">${TOOLS.map(t => `
+      <a class="hub-card" href="${t.href}" data-tool="${t.id}">
+        <span class="hub-n">${esc(t.mark)}</span>
+        <span class="hub-kicker">${esc(t.kicker)}</span>
+        <h2>${esc(t.title)}</h2>
+        <p>${esc(t.line)}</p>
+      </a>`).join('')}
+    </div>
+  </div>`;
+}
+
+function fmtMs(ms) {
+  const n = Math.max(0, Number(ms) || 0);
+  return `${Math.floor(n / 60000)}:${String(Math.floor((n % 60000) / 1000)).padStart(2, '0')}`;
+}
+function musicCopy(value, label) {
+  if (!value || value === 'Unknown') return;
+  navigator.clipboard.writeText(value).then(() => toast(`${label} kopyalandı`, 'success')).catch(() => toast('Kopyalanamadı', 'error'));
+}
+function musicResultHtml(r) {
+  const q = encodeURIComponent(`${r.artists || ''} ${r.trackName || ''}`.trim());
+  const dist = r.distributor && r.distributor !== 'Unknown' ? r.distributor : 'Doğrulanamadı';
+  const label = r.label && r.label !== 'Unknown' ? r.label : 'Belirlenemedi';
+  const rights = r.rightsHolder && r.rightsHolder !== 'Unknown' ? r.rightsHolder : 'Belirlenemedi';
+  const conf = Math.max(0, Math.min(100, Number(r.distributorScore) || 0));
+  const platforms = [
+    ['Spotify', r.spotifyUrl || `https://open.spotify.com/search/${q}`],
+    ['YouTube', r.youtubeEvidenceUrl || `https://www.youtube.com/results?search_query=${q}`],
+    ['YouTube Music', `https://music.youtube.com/search?q=${q}`],
+    ['Apple Music', `https://music.apple.com/search?term=${q}`],
+    ['Deezer', `https://www.deezer.com/search/${q}`],
+  ];
+  const album = r.albumDetails || {};
+  const artists = Array.isArray(r.artistDetails) ? r.artistDetails : [];
+  return `<article class="lf-result">
+    <div class="lf-track">
+      <div class="lf-cover">${r.coverUrl ? `<img src="${esc(r.coverUrl)}" alt="">` : ''}</div>
+      <div class="lf-heading">
+        <span class="eyebrow">Kayıt</span>
+        <h1>${esc(r.trackName || 'Parça')}</h1>
+        <p>${esc(r.artists || '')}</p>
+        <div class="lf-mini"><span>${fmtMs(r.durationMs)}</span><span>${esc((r.releaseDate || '').slice(0, 4) || '—')}</span><span>${esc(album.name || r.albumName || '')}</span></div>
+        <div class="actions">
+          ${r.previewUrl ? `<button class="btn btn-play" type="button" id="lf-play">Önizleme</button>` : ''}
+          ${r.spotifyUrl ? `<a class="btn btn-ghost" href="${esc(r.spotifyUrl)}" target="_blank" rel="noreferrer">Spotify</a>` : ''}
+          <button class="btn btn-ghost" type="button" id="lf-again">Yeni arama</button>
+        </div>
+      </div>
+    </div>
+    <section class="lf-signal">
+      <div class="lf-signal-top">
+        <div>
+          <span class="eyebrow">Dağıtımcı</span>
+          <h2>${esc(dist)}</h2>
+          <p>${esc(DIST_SRC[r.distributorSource] || DIST_SRC.not_found)}</p>
+        </div>
+        <div class="lf-conf" aria-label="Güven ${conf}%"><b>${conf}</b><small>%</small></div>
+      </div>
+      <dl class="lf-meta">
+        <div><dt>Etiket</dt><dd>${esc(label)}</dd></div>
+        <div><dt>Hak sahibi</dt><dd>${esc(rights)}</dd></div>
+        <div><dt>Kanıt</dt><dd>${esc(r.distributorEvidence || r.youtubeProvider || 'Açık satır yok')}</dd></div>
+      </dl>
+    </section>
+    <section class="lf-ids">
+      <button type="button" data-copy="${esc(r.isrc || '')}" data-copy-label="ISRC"><span>ISRC</span><strong>${esc(r.isrc || '—')}</strong></button>
+      <button type="button" data-copy="${esc(r.upc || '')}" data-copy-label="UPC"><span>UPC / EAN</span><strong>${esc(r.upc || '—')}</strong></button>
+    </section>
+    <section class="lf-platforms">
+      <h3>Kaynak ağı</h3>
+      <div class="lf-links">${platforms.map(([name, href]) => `<a href="${esc(href)}" target="_blank" rel="noreferrer">${esc(name)}</a>`).join('')}</div>
+    </section>
+    ${artists.length ? `<section class="lf-artists">${artists.map(a => `<a class="lf-artist" href="${esc(a.spotifyUrl || `https://open.spotify.com/search/${encodeURIComponent(a.name || '')}`)}" target="_blank" rel="noreferrer">${a.imageUrl ? `<img src="${esc(a.imageUrl)}" alt="">` : ''}<span>${esc(a.name || '')}</span></a>`).join('')}</section>` : ''}
+  </article>`;
+}
+function bindMusicResult(r) {
+  $('#lf-again')?.addEventListener('click', () => {
+    stopMusic();
+    musicState = {q: '', result: null, items: null, error: '', loading: false};
+    viewLovellify();
+  });
+  const play = $('#lf-play');
+  if (play && r.previewUrl) {
+    play.onclick = () => {
+      if (!musicAudio) {
+        musicAudio = new Audio(r.previewUrl);
+        musicAudio.addEventListener('ended', () => { play.textContent = 'Önizleme'; });
+      }
+      if (musicAudio.paused) { musicAudio.play().catch(() => toast('Önizleme açılamadı', 'error')); play.textContent = 'Durdur'; }
+      else { musicAudio.pause(); play.textContent = 'Önizleme'; }
+    };
+  }
+  $$('[data-copy]', main).forEach(btn => btn.addEventListener('click', () => musicCopy(btn.dataset.copy, btn.dataset.copyLabel || 'Değer')));
+}
+function viewLovellify() {
+  document.title = 'Lovellify — LOVELL';
+  if (musicState.loading) {
+    main.innerHTML = `<div class="lf"><form class="lf-search is-docked" id="lf-form"><input name="q" value="${esc(musicState.q)}" autocomplete="off" spellcheck="false" placeholder="Spotify bağlantısı veya sanatçı + şarkı"><button class="btn btn-play" type="submit" disabled>Aranıyor</button></form><div class="lf-status"><span class="spin"></span> Dağıtım kaydı taranıyor<div class="muted">SPOTIFY · ISRC · YOUTUBE · ETİKET</div></div></div>`;
+    return;
+  }
+  if (musicState.error) {
+    main.innerHTML = `<div class="lf"><form class="lf-search is-docked" id="lf-form"><input name="q" value="${esc(musicState.q)}" autocomplete="off" spellcheck="false" required placeholder="Spotify bağlantısı veya sanatçı + şarkı"><button class="btn btn-play" type="submit">Ara</button></form><div class="lf-status lf-error"><span class="eyebrow">Arama tamamlanamadı</span><h2>Kayıt eşleşmedi</h2><p>${esc(musicState.error)}</p><button class="btn btn-ghost" type="button" id="lf-retry">Tekrar dene</button></div></div>`;
+    $('#lf-retry').onclick = () => { musicState.error = ''; viewLovellify(); };
+  } else if (musicState.items?.length) {
+    main.innerHTML = `<div class="lf has-result"><form class="lf-search is-docked" id="lf-form"><input name="q" value="${esc(musicState.q)}" autocomplete="off" spellcheck="false" required placeholder="Spotify albüm, çalma listesi veya parça"><button class="btn btn-play" type="submit">Ara</button></form>
+      <section class="lf-batch"><span class="eyebrow">Toplu sorgu</span><h2>${musicState.items.length} parça</h2>
+      <table class="lf-table"><thead><tr><th>Parça</th><th>ISRC</th><th>Dağıtımcı</th></tr></thead><tbody>
+        ${musicState.items.map(r => `<tr><td><b>${esc(r.trackName || '')}</b><div class="muted">${esc(r.artists || '')}</div></td><td>${esc(r.isrc || '—')}</td><td>${esc(r.distributor && r.distributor !== 'Unknown' ? r.distributor : '—')}</td></tr>`).join('')}
+      </tbody></table></section></div>`;
+  } else if (musicState.result) {
+    main.innerHTML = `<div class="lf has-result"><form class="lf-search is-docked" id="lf-form"><input name="q" value="${esc(musicState.q)}" autocomplete="off" spellcheck="false" required placeholder="Spotify bağlantısı veya sanatçı + şarkı"><button class="btn btn-play" type="submit">Ara</button></form>${musicResultHtml(musicState.result)}</div>`;
+    bindMusicResult(musicState.result);
+  } else {
+    main.innerHTML = `<div class="lf is-landing">
+      <div class="lf-hero">
+        <div class="lf-copy">
+          <span class="eyebrow">Müzik kaydı</span>
+          <h1><b>LOVELL</b><em>IFY</em></h1>
+          <p>Bir parçanın arkasındaki etiketi, dağıtımcıyı ve ISRC izini tek aramada bul. Searchify altyapısı, LOVELL arayüzü.</p>
+        </div>
+        <div class="lf-object" aria-hidden="true">
+          <div class="lf-vinyl"></div>
+          <div class="lf-note">♪</div>
+        </div>
+      </div>
+      <form class="lf-search is-center" id="lf-form">
+        <input name="q" value="${esc(musicState.q)}" autocomplete="off" spellcheck="false" required placeholder="Spotify parça, albüm veya sanatçı bağlantısı — ya da Sanatçı + Şarkı" autofocus>
+        <button class="btn btn-play" type="submit">Ara</button>
+      </form>
+    </div>`;
+  }
+  const form = $('#lf-form');
+  if (!form) return;
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const q = String(new FormData(form).get('q') || '').trim();
+    if (!q || musicState.loading) return;
+    stopMusic();
+    musicState = {q, result: null, items: null, error: '', loading: true};
+    viewLovellify();
+    try {
+      const out = await apiSend('/api/music/lookup', 'POST', {urlOrId: q});
+      musicState = {q, result: out.data, items: out.collection ? out.items : null, error: '', loading: false};
+    } catch (err) {
+      musicState = {q, result: null, items: null, error: err.message || 'Parça bilgisi alınamadı.', loading: false};
+    }
+    if (document.documentElement.dataset.app === 'lovellify') viewLovellify();
+  };
+}
+
+const SF_WORDS = {
+  tr: 'bir ve olmak bu için o ben demek çok yapmak ne gibi daha almak var kendi gelmek ile vermek ama sonra kadar yer en insan değil her istemek yıl çıkmak görmek gün biz gitmek iş şey ara ki bilmek el zaman ya çocuk iki bakmak çalışmak içinde büyük yok başlamak yol kalmak neden siz konu yapılmak iyi kadın ev ise diye bulunmak söylemek göz gerekmek dünya baş durum yan geçmek sen onlar yeni önce başka hal orta su girmek ülke yemek hiç bile nasıl bütün karşı bulmak böyle yaşamak düşünmek aynı iç ancak kişi bunlar veya ilk göre ön son biri şekil önemli yüz hem göstermek etmek alt getirmek kullanmak çünkü taraf şimdi adam onun diğer artık üzerinde ses hep doğru durmak kız tüm çekmek konuşmak para anlamak anne az bazı baba hayat sadece küçük fazla bilgi an sormak bunun öyle yine sağlamak sonuç dış ad yani süre dönmek açmak oturmak anlatmak bırakmak hemen saat yaş sorun devlet sahip sıra yazmak yüzde ay atmak tutmak bunu olay düşmek duymak söz güzel sevmek biraz zor çıkarmak şu koymak tek sistem birlikte kim genç kapı kitap üzerine burada gece alan işte beklemek uzun hiçbir bugün dönem arkadaş ürün aile üç okumak erkek herkes güç belki gerçek tam ilgili ilişki çevre eski aramak yaşam halk yakın sokak tarih özellik bölüm özel akıl kimse'.split(' '),
+  en: 'the be of and a to in he have it that for they i with as not on she at by this we you do but from or which one would all will there say who make when can more if no man out other so what time up go about than into could state only new year some take come these know see use get like then first any work now may such give over think most even find day also after way many must look before great back through long where much should well people down own just because good each those feel seem how high too place little world very still nation hand old life tell write become here show house both between need mean call develop under last right move thing general school never same another begin while number part turn real leave might want point form off child few small since against ask late home interest large person end open public follow during present without again hold around possible head consider word program problem however lead system set order eye plan run keep face fact group play stand increase early course change help line'.split(' '),
+};
+const SF_DURATIONS = [15, 30, 60];
+let speedTimer = 0;
+let speedState = null;
+
+function stopSpeed() {
+  clearInterval(speedTimer);
+  speedTimer = 0;
+  if (speedState?.status === 'run') speedState = sfFresh({duration: speedState.duration, lang: speedState.lang});
+}
+
+function sfPick(lang, n = 90) {
+  const list = SF_WORDS[lang] || SF_WORDS.tr;
+  const out = [];
+  let last = '';
+  while (out.length < n) {
+    const w = list[Math.floor(Math.random() * list.length)];
+    if (w && w !== last) { out.push(w); last = w; }
+  }
+  return out;
+}
+
+function sfFresh(partial = {}) {
+  const duration = SF_DURATIONS.includes(partial.duration) ? partial.duration : (store.get('speedDuration', 30) || 30);
+  const lang = partial.lang === 'en' || partial.lang === 'tr' ? partial.lang : (store.get('speedLang', 'tr') || 'tr');
+  store.set('speedDuration', duration);
+  store.set('speedLang', lang);
+  return {
+    duration,
+    lang,
+    words: sfPick(lang),
+    typed: [''],
+    startedAt: 0,
+    left: duration,
+    status: 'idle',
+    result: null,
+    board: partial.board || [],
+    me: partial.me || null,
+    total: partial.total || 0,
+    error: '',
+    saving: false,
+    liveWpm: 0,
+  };
+}
+
+function sfTally(words, typed, duration) {
+  let correct = 0, incorrect = 0, extra = 0, missed = 0;
+  const miss = {};
+  const last = typed.length - 1;
+  typed.forEach((t, i) => {
+    const w = words[i] || '';
+    const submitted = i < last;
+    const len = Math.max(w.length, t.length);
+    for (let c = 0; c < len; c++) {
+      if (c >= w.length) extra++;
+      else if (c >= t.length) { if (submitted) missed++; }
+      else if (t[c] === w[c]) correct++;
+      else { incorrect++; miss[w[c]] = (miss[w[c]] || 0) + 1; }
+    }
+    if (submitted) {
+      if (t === w) correct++;
+      else incorrect++;
+    }
+  });
+  const minutes = duration / 60;
+  const wpm = minutes > 0 ? Math.round((correct / 5) / minutes) : 0;
+  const raw = minutes > 0 ? Math.round(((correct + incorrect + extra) / 5) / minutes) : 0;
+  const total = correct + incorrect + extra;
+  const acc = total > 0 ? Math.round((correct / total) * 100) : 0;
+  return {correct, incorrect, extra, missed, wpm, raw, acc, miss};
+}
+function sfSpark(hist) {
+  const pts = (hist || []).slice(0, 12).reverse();
+  if (pts.length < 2) return '';
+  const max = Math.max(...pts.map(p => p.wpm), 1);
+  const d = pts.map((p, i) => `${((i / (pts.length - 1)) * 100).toFixed(1)},${(100 - (p.wpm / max) * 88).toFixed(1)}`).join(' ');
+  return `<svg class="sf-spark" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"><polyline fill="none" stroke="currentColor" stroke-width="3" points="${d}"/></svg>`;
+}
+
+function sfWordsHtml(st) {
+  const cur = st.typed.length - 1;
+  return st.words.map((w, i) => {
+    const t = st.typed[i] || '';
+    if (i > cur) return `<span class="sf-word">${esc(w)}</span>`;
+    const chars = [];
+    const n = i === cur ? Math.max(w.length, t.length) : Math.max(w.length, t.length);
+    for (let c = 0; c < n; c++) {
+      const expect = w[c] || '';
+      const got = t[c];
+      if (i === cur && c === t.length) chars.push(`<span class="sf-caret"></span>`);
+      if (got == null) chars.push(`<span>${esc(expect)}</span>`);
+      else if (!expect) chars.push(`<span class="extra">${esc(got)}</span>`);
+      else if (got === expect) chars.push(`<span class="ok">${esc(expect)}</span>`);
+      else chars.push(`<span class="bad">${esc(expect)}</span>`);
+    }
+    if (i === cur && t.length >= w.length) chars.push(`<span class="sf-caret"></span>`);
+    return `<span class="sf-word${i === cur ? ' is-on' : ''}${i < cur ? (t === w ? ' is-ok' : ' is-bad') : ''}">${chars.join('')}</span>`;
+  }).join('');
+}
+
+function sfBoardHtml(st) {
+  const rows = st.board || [];
+  if (!rows.length && !st.me) return `<p class="sf-empty">Bu modda henüz kayıt yok. İlk sırayı sen aç.</p>`;
+  const meOff = st.me && !rows.some(r => r.you) ? `<tr class="is-you"><td>${st.me.rank}</td><td>${esc(st.me.name)}</td><td>${st.me.wpm}</td><td>${st.me.acc}%</td></tr>` : '';
+  return `<table class="sf-table"><thead><tr><th>#</th><th>İsim</th><th>WPM</th><th>Doğruluk</th></tr></thead><tbody>
+    ${rows.map(r => `<tr class="${r.you ? 'is-you' : ''}"><td>${r.rank}</td><td>${esc(r.name)}${r.you ? ' <small>sen</small>' : ''}</td><td>${r.wpm}</td><td>${r.acc}%</td></tr>`).join('')}
+    ${meOff}
+  </tbody></table>`;
+}
+
+function sfAlign() {
+  const rail = $('.sf-rail');
+  const track = $('#sf-words');
+  const on = track?.querySelector('.sf-word.is-on');
+  if (!track || !on || !rail) return;
+  const margin = Math.round(rail.clientWidth * 0.12);
+  track.style.transform = `translate3d(${margin - on.offsetLeft}px,0,0)`;
+}
+function paintSpeedWords() {
+  const el = $('#sf-words');
+  if (!el || !speedState) return;
+  el.innerHTML = sfWordsHtml(speedState);
+  sfAlign();
+}
+function paintSpeedHud() {
+  if (!speedState) return;
+  const t = $('#sf-timer');
+  if (t) t.textContent = String(speedState.left);
+  const w = $('#sf-live');
+  if (w) w.textContent = String(speedState.liveWpm);
+}
+
+function sfStartClock() {
+  clearInterval(speedTimer);
+  speedState.startedAt = Date.now();
+  speedState.status = 'run';
+  document.documentElement.dataset.sf = 'run';
+  $('#sf-stage')?.classList.remove('is-idle');
+  $('.sf')?.classList.add('is-run');
+  $('.sf-hint')?.remove();
+  $$('[data-sf-dur], [data-sf-lang]').forEach(b => { b.disabled = true; });
+  speedTimer = setInterval(() => {
+    if (!speedState || speedState.status !== 'run') return;
+    const elapsed = (Date.now() - speedState.startedAt) / 1000;
+    speedState.left = Math.max(0, Math.ceil(speedState.duration - elapsed));
+    const live = sfTally(speedState.words, speedState.typed, Math.max(1, elapsed));
+    speedState.liveWpm = live.wpm;
+    paintSpeedHud();
+    if (elapsed >= speedState.duration) sfFinish();
+  }, 100);
+}
+
+async function sfFinish() {
+  if (!speedState || speedState.status === 'done') return;
+  clearInterval(speedTimer);
+  speedTimer = 0;
+  speedState.left = 0;
+  speedState.status = 'done';
+  const stats = sfTally(speedState.words, speedState.typed, speedState.duration);
+  speedState.result = stats;
+  const hist = store.get('speedHistory', []);
+  hist.unshift({at: Date.now(), wpm: stats.wpm, acc: stats.acc, raw: stats.raw, duration: speedState.duration, lang: speedState.lang, miss: stats.miss});
+  store.set('speedHistory', hist.slice(0, 24));
+  speedState.saving = true;
+  viewSpeedfy();
+  try {
+    const out = await apiSend('/api/speed/result', 'POST', {
+      duration: speedState.duration,
+      lang: speedState.lang,
+      wpm: stats.wpm,
+      acc: stats.acc,
+      raw: stats.raw,
+      chars: {correct: stats.correct, incorrect: stats.incorrect, extra: stats.extra, missed: stats.missed},
+    });
+    if (speedState) {
+      speedState.board = out.board || [];
+      speedState.me = out.me;
+      speedState.total = out.total || 0;
+      speedState.improved = !!out.improved;
+      speedState.saving = false;
+      speedState.error = '';
+    }
+  } catch (err) {
+    if (speedState) {
+      speedState.saving = false;
+      speedState.error = err.message || 'Sıralama kaydedilemedi.';
+    }
+  }
+  if (document.documentElement.dataset.app === 'speedfy') viewSpeedfy();
+}
+
+async function loadSpeedBoard() {
+  if (!speedState) return;
+  try {
+    const out = await api(`/api/speed/board?duration=${speedState.duration}&lang=${speedState.lang}`, 12000, {quiet: true});
+    if (!speedState || speedState.status === 'run') return;
+    speedState.board = out.board || [];
+    speedState.me = out.me;
+    speedState.total = out.total || 0;
+    const box = $('#sf-board');
+    if (box) box.innerHTML = sfBoardHtml(speedState);
+    const hint = $('#sf-rank-hint');
+    if (hint) hint.textContent = speedState.me ? `Sıralaman: #${speedState.me.rank} · ${speedState.me.wpm} WPM` : 'Bu modda henüz kaydın yok.';
+  } catch {}
+}
+
+function bindSpeedfy() {
+  if (!speedState) return;
+  $$('[data-sf-dur]').forEach(btn => btn.onclick = () => {
+    if (speedState.status === 'run') return;
+    speedState = sfFresh({duration: Number(btn.dataset.sfDur), lang: speedState.lang});
+    viewSpeedfy();
+    loadSpeedBoard();
+  });
+  $$('[data-sf-lang]').forEach(btn => btn.onclick = () => {
+    if (speedState.status === 'run') return;
+    speedState = sfFresh({duration: speedState.duration, lang: btn.dataset.sfLang});
+    viewSpeedfy();
+    loadSpeedBoard();
+  });
+  const restart = () => {
+    speedState = sfFresh({duration: speedState.duration, lang: speedState.lang, board: speedState.board, me: speedState.me, total: speedState.total});
+    viewSpeedfy();
+    loadSpeedBoard();
+  };
+  $('#sf-restart')?.addEventListener('click', restart);
+  const input = $('#sf-input');
+  const stage = $('#sf-stage');
+  if (!input) return;
+  const focus = () => input.focus({preventScroll: true});
+  stage?.addEventListener('click', focus);
+  requestAnimationFrame(() => { focus(); sfAlign(); });
+  if (!window._sfResize) {
+    window._sfResize = () => { if (document.documentElement.dataset.app === 'speedfy') sfAlign(); };
+    addEventListener('resize', window._sfResize);
+  }
+  input.onkeydown = e => {
+    if (e.key === 'Tab') { e.preventDefault(); restart(); return; }
+    if (speedState.status === 'done') return;
+    if (e.key === 'Backspace') {
+      e.preventDefault();
+      const cur = speedState.typed.length - 1;
+      if (speedState.typed[cur]) speedState.typed[cur] = speedState.typed[cur].slice(0, -1);
+      else if (cur > 0) speedState.typed.pop();
+      paintSpeedWords();
+    }
+  };
+  input.oninput = () => {
+    if (!speedState || speedState.status === 'done') { input.value = ''; return; }
+    const raw = input.value;
+    input.value = '';
+    if (!raw) return;
+    if (speedState.status === 'idle') sfStartClock();
+    for (const ch of raw) {
+      if (ch === ' ' || ch === '\n') {
+        if (!speedState.typed[speedState.typed.length - 1]) continue;
+        speedState.typed.push('');
+        if (speedState.typed.length > speedState.words.length - 20) speedState.words.push(...sfPick(speedState.lang, 40));
+      } else if (ch.length === 1 && ch !== '\t') {
+        const i = speedState.typed.length - 1;
+        if (speedState.typed[i].length < 28) speedState.typed[i] += ch;
+      }
+    }
+    paintSpeedWords();
+  };
+}
+
+function viewSpeedfy() {
+  document.title = 'Speedfy — LOVELL';
+  if (!speedState) speedState = sfFresh();
+  const st = speedState;
+  document.documentElement.dataset.sf = st.status === 'run' ? 'run' : st.status === 'done' ? 'done' : 'idle';
+  const durBtns = SF_DURATIONS.map(n => `<button type="button" class="sf-chip${st.duration === n ? ' on' : ''}" data-sf-dur="${n}" ${st.status === 'run' ? 'disabled' : ''}>${n}s</button>`).join('');
+  const langBtns = [['tr', 'Türkçe'], ['en', 'English']].map(([id, label]) => `<button type="button" class="sf-chip${st.lang === id ? ' on' : ''}" data-sf-lang="${id}" ${st.status === 'run' ? 'disabled' : ''}>${label}</button>`).join('');
+  if (st.status === 'done' && st.result) {
+    const r = st.result;
+    main.innerHTML = `<div class="sf is-done">
+      <div class="sf-bar"><div class="sf-modes">${durBtns}<span class="sf-sep"></span>${langBtns}</div><button class="btn btn-ghost" type="button" id="sf-restart">Yeniden (Tab)</button></div>
+      <div class="sf-score">
+        <div><span class="eyebrow">WPM</span><b>${r.wpm}</b></div>
+        <div><span class="eyebrow">Doğruluk</span><b>${r.acc}<small>%</small></b></div>
+        <div><span class="eyebrow">Ham</span><b>${r.raw}</b></div>
+        <div><span class="eyebrow">Sıra</span><b>${st.saving ? '…' : (st.me ? '#' + st.me.rank : '—')}</b><small>${st.total ? st.total + ' kişi' : ''}</small></div>
+      </div>
+      ${st.improved ? '<p class="sf-best">Bu modda kişisel rekor.</p>' : ''}
+      ${st.error ? `<p class="sf-warn">${esc(st.error)}</p>` : ''}
+      ${(() => {
+        const hist = store.get('speedHistory', []);
+        const miss = Object.entries(st.result.miss || {}).sort((a, b) => b[1] - a[1]).slice(0, 6);
+        return `<section class="sf-insight">
+          <div><span class="eyebrow">Eğri</span>${sfSpark(hist) || '<p class="muted">Birkaç testten sonra eğri oluşur.</p>'}</div>
+          <div><span class="eyebrow">Takıldığın harfler</span>${miss.length ? `<p class="sf-miss">${miss.map(([ch, n]) => `<b>${esc(ch)}</b><small>×${n}</small>`).join('')}</p>` : '<p class="muted">Bu turda harf hatası yok.</p>'}</div>
+        </section>`;
+      })()}
+      <section class="sf-board-wrap">
+        <header><span class="eyebrow">Anahtar sahipleri</span><h2>${st.duration}s · ${st.lang === 'en' ? 'English' : 'Türkçe'}</h2></header>
+        <div id="sf-board">${st.saving ? '<p class="sf-empty">Sıralama kaydediliyor…</p>' : sfBoardHtml(st)}</div>
+      </section>
+      <input id="sf-input" class="sf-hidden" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-label="Yeniden başlat">
+    </div>`;
+    bindSpeedfy();
+    return;
+  }
+  main.innerHTML = `<div class="sf is-test${st.status === 'run' ? ' is-run' : ''}">
+    <div class="sf-bar">
+      <div class="sf-modes">${durBtns}<span class="sf-sep"></span>${langBtns}</div>
+      <div class="sf-hud"><span id="sf-timer">${st.left}</span></div>
+      <button class="sf-restart" type="button" id="sf-restart" title="Yenile" aria-label="Yenile">↻</button>
+    </div>
+    <div class="sf-stage${st.status === 'idle' ? ' is-idle' : ''}" id="sf-stage">
+      <div class="sf-rail">
+        <div class="sf-words" id="sf-words">${sfWordsHtml(st)}</div>
+      </div>
+      <input id="sf-input" class="sf-hidden" autocomplete="off" autocorrect="off" autocapitalize="none" spellcheck="false" aria-label="Yazma alanı">
+    </div>
+    ${st.status === 'idle' ? '<p class="sf-hint">Yazmaya başla</p>' : ''}
+  </div>`;
+  bindSpeedfy();
+}
+
+let readfyState = {q: '', items: [], suggest: [], total: 0, offset: 0, all: false, boot: false, manga: null, chapter: null, pages: [], page: 0, loading: false, error: ''};
+let rfRequest = 0;
+const rfActive = () => document.documentElement.dataset.app === 'readfy';
+async function openReadfyChapter(id, resume = true) {
+  const st = readfyState, mangaId = st.manga?.id, gen = ++rfRequest;
+  if (!mangaId) return;
+  st.loading = true; st.error = ''; st.pages = []; viewReadfy();
+  try {
+    const d = await api(`/api/readfy/chapter/${id}`, 15000);
+    if (gen !== rfRequest || !rfActive() || st.manga?.id !== mangaId) return;
+    if (!d.pages?.length) throw Error('Bu bölümde okunabilir sayfa yok.');
+    st.chapter = id; st.pages = d.pages;
+    const saved = mangaProgress()[mangaId];
+    st.page = Math.max(0, Math.min(st.pages.length - 1, resume && saved?.chapterId === id ? Number(saved.page) || 0 : 0));
+    saveMangaProgress(mangaId, id, st.page, st.manga);
+  } catch (e) { if (gen !== rfRequest || !rfActive()) return; st.error = e.message || 'Bölüm açılamadı.'; }
+  if (gen === rfRequest && rfActive()) { st.loading = false; viewReadfy(); }
+}
+async function loadReadfyChapters(language, more = false) {
+  const st = readfyState, manga = st.manga, gen = ++rfRequest;
+  if (!manga) return;
+  st.loading = true; st.error = ''; viewReadfy();
+  try {
+    const d = await api(`/api/readfy/manga/${manga.id}/chapters?lang=${language}&offset=${more ? manga.nextOffset || 0 : 0}`, 15000);
+    if (gen !== rfRequest || !rfActive() || st.manga !== manga) return;
+    const chapters = more ? [...manga.chapters, ...d.chapters] : d.chapters;
+    const seen = new Set();
+    Object.assign(manga, d, {chapters: chapters.filter(c => !seen.has(c.id) && seen.add(c.id))});
+  } catch (e) { if (gen !== rfRequest || !rfActive()) return; st.error = e.message || 'Bölümler yüklenemedi.'; }
+  if (gen === rfRequest && rfActive()) { st.loading = false; viewReadfy(); }
+}
+
+function mangaProgress() { return store.get('mangaProgress', {}); }
+function saveMangaProgress(mangaId, chapterId, page, meta = {}) {
+  const all = mangaProgress();
+  const prev = all[mangaId] || {};
+  all[mangaId] = {
+    chapterId: chapterId || prev.chapterId || '',
+    page,
+    at: Date.now(),
+    title: meta.title || prev.title || '',
+    cover: meta.cover || prev.cover || '',
+  };
+  store.set('mangaProgress', all);
+}
+function rfCards(list) {
+  return `<div class="rf-grid">${list.map(m => `<button class="rf-card" type="button" data-mg="${esc(m.id)}">${m.cover ? `<img src="${esc(m.cover)}" alt="">` : '<span class="rf-ph"></span>'}<span>${esc(m.title)}</span></button>`).join('')}</div>`;
+}
+async function viewReadfy() {
+  document.title = 'Readfy — LOVELL';
+  main.onkeydown = null;
+  const st = readfyState;
+  const wanted = (location.hash.match(/^#\/readfy\/([a-f0-9-]{16,48})/i) || [])[1] || '';
+  if (!wanted && (st.manga || st.pages.length) && st.fromHash) {
+    st.manga = null; st.pages = []; st.chapter = null; st.fromHash = false;
+  }
+  if (wanted && st.manga?.id !== wanted && st.failedManga !== wanted) {
+    if (st.pendingManga === wanted) return;
+    const gen = ++rfRequest; st.pendingManga = wanted;
+    st.fromHash = true;
+    st.pages = []; st.chapter = null; st.manga = null; st.loading = true; st.error = '';
+    main.innerHTML = `<div class="rf">${loading('Manga açılıyor')}</div>`;
+    try { const manga = await api(`/api/readfy/manga/${wanted}`); if (gen !== rfRequest || !rfActive()) return; st.manga = manga; st.failedManga = ''; saveMangaProgress(st.manga.id, mangaProgress()[st.manga.id]?.chapterId || '', mangaProgress()[st.manga.id]?.page || 0, st.manga); }
+    catch (err) { if (gen !== rfRequest || !rfActive()) return; st.error = err.message || 'Manga açılamadı.'; st.failedManga = wanted; }
+    st.pendingManga = ''; st.loading = false;
+    if (document.documentElement.dataset.app === 'readfy') viewReadfy();
+    return;
+  }
+  if (wanted && st.failedManga === wanted && !st.manga) {
+    main.innerHTML = `<div class="rf"><p class="sf-warn" role="alert">${esc(st.error || 'Manga açılamadı.')}</p><button class="btn" id="rf-retry-manga">Yeniden dene</button><a class="btn btn-ghost" href="#/readfy">Aramaya dön</a></div>`;
+    $('#rf-retry-manga').onclick = () => { st.failedManga = ''; viewReadfy(); };
+    return;
+  }
+  if (st.pages.length) {
+    st.page = Math.max(0, Math.min(st.pages.length - 1, st.page));
+    const src = st.pages[st.page];
+    const chapters = (st.manga?.chapters || []).filter(c => c.pages > 0 && !c.externalUrl);
+    const current = chapters.findIndex(c => c.id === st.chapter);
+    const next = current >= 0 ? chapters.slice(current + 1).find(c => c.chapter !== chapters[current].chapter || !c.chapter) : null;
+    main.innerHTML = `<div class="rf rf-reader" tabindex="0" aria-label="Manga okuyucu">
+      <div class="rf-bar"><button class="btn btn-ghost btn-sm" type="button" id="rf-back">Bölümler</button><span>${st.page + 1} / ${st.pages.length}</span><div class="actions"><button class="btn btn-ghost btn-sm" type="button" id="rf-prev" ${st.page === 0 ? 'disabled' : ''}>Önceki</button><button class="btn btn-play btn-sm" type="button" id="rf-next" ${st.page === st.pages.length - 1 ? 'disabled' : ''}>Sonraki</button>${next ? '<button class="btn btn-ghost btn-sm" id="rf-next-chapter">Sonraki bölüm</button>' : ''}</div></div>
+      <p id="rf-page-error" class="sf-warn" role="alert" hidden>Sayfa yüklenemedi. <button class="btn btn-sm" id="rf-refresh-pages">Sayfaları yenile</button></p>
+      <img class="rf-page" src="${esc(src)}" alt="${st.page + 1}. manga sayfası" id="rf-img">
+    </div>`;
+    const go = n => {
+      st.page = Math.max(0, Math.min(st.pages.length - 1, n));
+      if (st.manga) saveMangaProgress(st.manga.id, st.chapter, st.page, st.manga);
+      viewReadfy();
+    };
+    $('#rf-back').onclick = () => { st.pages = []; st.chapter = null; viewReadfy(); };
+    $('#rf-prev').onclick = () => go(st.page - 1);
+    $('#rf-next').onclick = () => go(st.page + 1);
+    $('#rf-next-chapter')?.addEventListener('click', () => openReadfyChapter(next.id, false));
+    $('#rf-refresh-pages').onclick = () => openReadfyChapter(st.chapter);
+    $('#rf-img').onerror = () => { $('#rf-page-error').hidden = false; };
+    $('#rf-img').onclick = () => go(st.page + 1);
+    main.onkeydown = e => {
+      if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); go(st.page + 1); }
+      else if (e.key === 'ArrowLeft') { e.preventDefault(); go(st.page - 1); }
+      else if (e.key === 'Escape') { st.pages = []; st.chapter = null; viewReadfy(); }
+    };
+    $('.rf-reader').focus({preventScroll:true});
+    return;
+  }
+  if (st.manga) {
+    const m = st.manga, lang = m.language || 'tr';
+    main.innerHTML = `<div class="rf"><button class="text-btn" type="button" id="rf-home">← Arama</button>
+      <header class="rf-head">${m.cover ? `<img src="${esc(m.cover)}" alt="">` : ''}<div><span class="eyebrow">Readfy</span><h1>${esc(m.title)}</h1><div id="show-bridge"></div><p>${esc(m.desc || '')}</p></div></header>
+      <label>Bölüm dili <select id="rf-language" ${st.loading ? 'disabled' : ''}><option value="tr" ${lang === 'tr' ? 'selected' : ''}>Türkçe</option><option value="en" ${lang === 'en' ? 'selected' : ''}>İngilizce</option></select></label>
+      ${st.loading ? '<p class="muted" role="status">Bölüm yükleniyor…</p>' : ''}
+      ${st.error ? `<p class="sf-warn" role="alert">${esc(st.error)}</p>` : ''}
+      <ol class="rf-ch">${(m.chapters || []).map(c => `<li>${c.externalUrl ? `<a href="${esc(c.externalUrl)}" target="_blank" rel="noopener noreferrer">${esc(c.lang.toUpperCase())} · ${esc(c.chapter || '?')} · Yayıncıda aç ↗</a>` : `<button type="button" data-ch="${esc(c.id)}" ${st.loading || !c.pages ? 'disabled' : ''}>${esc(c.lang.toUpperCase())} · ${esc(c.chapter || '?')}${c.title ? ' · ' + esc(c.title) : ''}${!c.pages ? ' · Sayfa yok' : ''}</button>`}</li>`).join('') || `<li class="muted">${lang === 'tr' ? 'Türkçe bölüm bulunamadı. İstersen İngilizce bölümleri seçebilirsin.' : 'İngilizce bölüm bulunamadı.'}</li>`}</ol>
+      <p class="muted">${m.chapters?.length || 0} / ${m.total || 0} bölüm</p>${m.hasMore ? `<button class="btn btn-ghost" id="rf-more-chapters" ${st.loading ? 'disabled' : ''}>Daha fazla bölüm</button>` : ''}
+    </div>`;
+    $('#rf-home').onclick = () => { ++rfRequest; st.manga = null; st.pages = []; st.fromHash = false; location.hash = '#/readfy'; };
+    $('#rf-language').onchange = e => loadReadfyChapters(e.target.value);
+    $('#rf-more-chapters')?.addEventListener('click', () => loadReadfyChapters(lang, true));
+    loadShowBridge(m);
+    $$('[data-ch]').forEach(b => b.onclick = () => openReadfyChapter(b.dataset.ch));
+    return;
+  }
+
+  const cont = Object.entries(mangaProgress()).map(([id, v]) => ({id, ...v})).filter(x => x.title).sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 8);
+  const shelf = st.q ? st.items : (st.all ? st.suggest : st.suggest.slice(0, 12));
+  const more = !st.q && st.suggest.length < st.total;
+  main.innerHTML = `<div class="rf">
+    <header class="hub-hero"><p class="eyebrow">Manga</p><h1>Readfy</h1><p>MangaDex arşivinden oku. Kaldığın sayfa bu tarayıcıda durur.</p></header>
+    <form class="lf-search is-center" id="rf-form"><input name="q" value="${esc(st.q)}" placeholder="Manga adı" autocomplete="off"><button class="btn btn-play" type="submit"${st.loading ? ' disabled' : ''}>${st.loading ? 'Aranıyor' : 'Ara'}</button></form>
+    ${st.loading ? '<p class="muted">MangaDex taranıyor…</p>' : ''}
+    ${st.error ? `<p class="sf-warn">${esc(st.error)}</p>` : ''}
+    ${!st.q && cont.length ? `<section class="rf-shelf"><header><h2>Kaldığın yer</h2></header>${rfCards(cont)}</section>` : ''}
+    <section class="rf-shelf"><header><h2>${st.q ? 'Arama' : 'Önerilen'}</h2>${!st.q && !st.all && st.suggest.length > 12 ? '<button class="text-btn" type="button" id="rf-all">Hepsini gör</button>' : ''}${st.q ? '<button class="text-btn" type="button" id="rf-clear">Öneriler</button>' : ''}</header>
+      ${shelf.length ? rfCards(shelf) : (st.loading ? '' : '<p class="muted">Liste boş.</p>')}
+      ${more ? `<div class="rf-more"><button class="btn btn-ghost btn-sm" type="button" id="rf-more">${st.all ? 'Daha fazla' : 'Hepsini gör'}</button></div>` : ''}
+    </section>
+  </div>`;
+  $('#rf-form').onsubmit = async e => {
+    e.preventDefault();
+    const q = String(new FormData(e.target).get('q') || '').trim();
+    if (q.length < 2) return;
+    const gen = ++rfRequest;
+    st.q = q; st.loading = true; st.error = ''; viewReadfy();
+    try {
+      const d = await api(`/api/readfy/search?q=${encodeURIComponent(q)}`);
+      if (gen !== rfRequest || !rfActive()) return;
+      st.items = d.items || [];
+      if (!st.items.length) st.error = 'Sonuç yok.';
+    } catch (err) { if (gen !== rfRequest || !rfActive()) return; st.error = err.message || 'Arama başarısız.'; }
+    st.loading = false;
+    viewReadfy();
+  };
+  $('#rf-all')?.addEventListener('click', () => { st.all = true; viewReadfy(); });
+  $('#rf-clear')?.addEventListener('click', () => { st.q = ''; st.items = []; st.error = ''; viewReadfy(); });
+  $('#rf-more')?.addEventListener('click', () => {
+    if (!st.all && st.suggest.length > 12) { st.all = true; viewReadfy(); return; }
+    st.all = true;
+    loadSuggest();
+  });
+  $$('[data-mg]').forEach(b => b.onclick = openManga);
+  if (!st.q && !st.suggest.length && !st.boot) { st.boot = true; loadSuggest(); }
+}
+
+let rfGen = 0;
+async function loadSuggest() {
+  const st = readfyState;
+  if (st.loading) return;
+  const gen = ++rfGen;
+  st.loading = true; st.error = '';
+  viewReadfy();
+  try {
+    const d = await api(`/api/readfy/popular?offset=${st.offset}`);
+    if (gen !== rfGen) return;
+    const seen = new Set(st.suggest.map(x => x.id));
+    st.suggest.push(...(d.items || []).filter(x => x?.id && !seen.has(x.id)));
+    st.total = Number(d.total) || st.suggest.length;
+    st.offset += (d.items || []).length || 18;
+  } catch (err) { if (gen === rfGen) st.error = err.message || 'Öneriler alınamadı.'; }
+  if (gen !== rfGen) return;
+  st.loading = false;
+  if (document.documentElement.dataset.app === 'readfy' && !readfyState.manga && !readfyState.pages.length) viewReadfy();
+}
+
+function openManga(e) {
+  const id = e.currentTarget?.dataset?.mg;
+  if (id) location.hash = `#/readfy/${id}`;
+}
+
+const MOODS = [
+  {id: 'tired', label: 'Çok yorgunum ama uykum yok', hint: 'Hafif, sıcak, kafa dağıtan.', genre: 'gunluk-yasam', sort: 'popular', kind: 'tv', section: 'anime'},
+  {id: 'sharp', label: 'Zihnim açılsın, karmaşık bir şey', hint: 'Gizem ve zeka.', genre: 'gizem', sort: 'rating', kind: 'tv', section: 'anime'},
+  {id: 'rain', label: 'Yağmurlu ve melankolik', hint: 'Yavaş, duygusal.', genre: 'dram', sort: 'rating', kind: 'movie', section: 'anime'},
+  {id: 'fire', label: 'Aksiyon istiyorum, şimdi', hint: 'Hızlı kesitler.', genre: 'aksiyon', sort: 'popular', kind: 'tv', section: 'anime'},
+  {id: 'laugh', label: 'Gülmem lazım', hint: 'Komedi.', genre: 'komedi', sort: 'popular', kind: 'tv', section: 'anime'},
+  {id: 'cozy', label: 'Battaniye + film', hint: 'Sinemalık bir film.', genre: 'fantastik', sort: 'rating', kind: 'movie', section: 'media'},
+];
+let moodState = {pick: null, spinning: false};
+async function viewTavsiye() {
+  document.title = 'TavsiyerVerKnk — LOVELL';
+  const p = moodState.pick;
+  main.innerHTML = `<div class="mood">
+    <header class="hub-hero"><p class="eyebrow">Ruh hali</p><h1>TavsiyerVerKnk</h1><p>Ne izleyeceğine karar veremiyorsan ruh halini seç. Sana bir başlık çekilir.</p></header>
+    <div class="mood-grid">${MOODS.map(m => `<button type="button" class="mood-card" data-mood="${m.id}"><b>${esc(m.label)}</b><span>${esc(m.hint)}</span></button>`).join('')}</div>
+    ${moodState.spinning ? '<div class="mood-reveal is-spin"><span class="spin"></span> Zar atılıyor…</div>' : ''}
+    ${p ? `<a class="mood-reveal" href="#/izle/${p.kind}/${p.id}"><img src="${esc(p.backdrop || p.poster || '')}" alt=""><div><span class="eyebrow">Bugünkü çekiliş</span><h2>${esc(p.title)}</h2><p>${esc((p.overview || '').slice(0, 180))}</p><span class="btn btn-play">İzlemeye geç</span></div></a>` : ''}
+  </div>`;
+  $$('[data-mood]').forEach(b => b.onclick = async () => {
+    const spec = MOODS.find(m => m.id === b.dataset.mood);
+    if (!spec || moodState.spinning) return;
+    moodState.spinning = true; moodState.pick = null; viewTavsiye();
+    try {
+      const d = await api(`/api/browse?${new URLSearchParams({kind: spec.kind, genre: spec.genre, sort: spec.sort, page: '1', section: spec.section})}`);
+      const pool = (d.items || []).filter(i => i.backdrop || i.poster);
+      moodState.pick = pool[Math.floor(Math.random() * pool.length)] || null;
+      if (!moodState.pick) toast('Bu ruh haline uygun başlık bulunamadı', 'error');
+    } catch (e) { toast(e.message || 'Çekiliş yapılamadı', 'error'); }
+    moodState.spinning = false;
+    viewTavsiye();
+  });
+}
+
 // ---- 404 ----
 function viewNotFound() {
-  main.innerHTML = `<div class="page">${emptyState({icon: 'lost', title: 'Bu sayfa bulunamadı', text: 'Adres değişmiş ya da yanlış yazılmış olabilir. Ana sayfaya dönebilir ya da aradığını arayabilirsin.', actions: '<a class="btn btn-play" href="#/">Ana sayfaya dön</a><button class="btn btn-ghost" type="button" data-open-search>Ara</button>', cls: 'state-404'})}</div>`;
-  $('[data-open-search]', main).onclick = openSearch;
+  main.innerHTML = `<div class="page">${emptyState({icon: 'lost', title: 'Bu sayfa bulunamadı', text: 'Adres değişmiş ya da yanlış yazılmış olabilir. Ana sayfaya dönebilir ya da aradığını arayabilirsin.', actions: '<a class="btn btn-play" href="#/">Araç kutusuna dön</a><a class="btn btn-ghost" href="#/watch">İzlemeye geç</a>', cls: 'state-404'})}</div>`;
 }
 
 // ---- Bağlantı durumu ----
@@ -2431,8 +3793,8 @@ document.addEventListener('click', e => {
   if (!t) return;
   if (t.dataset.footTab) {
     e.preventDefault();
-    if (t.dataset.footTab === section && !/^#\/canli/.test(location.hash)) location.hash = '#/';
-    else { $(`.tab-btn[data-tab="${t.dataset.footTab}"]`)?.click(); setTimeout(() => { if (location.hash !== '#/' && !/^#\/?$/.test(location.hash)) location.hash = '#/'; }, 50); }
+    if (t.dataset.footTab === section && !/^#\/canli/.test(location.hash)) location.hash = '#/watch';
+    else { $(`.tab-btn[data-tab="${t.dataset.footTab}"]`)?.click(); setTimeout(() => { if (!/^#\/watch(\?|$)/.test(location.hash) && !/^#\/?$/.test(location.hash)) location.hash = '#/watch'; }, 50); }
     scrollTo({top: 0, behavior: reduceMotion ? 'auto' : 'smooth'});
   } else if (t.hasAttribute('data-open-settings')) openSettings();
   else openShortcuts();
@@ -2443,8 +3805,11 @@ $('#settings-open').onclick = openSettings;
 let routeId = 0;
 let _scrollIo = null; // viewBrowse sonsuz scroll observer — route değişiminde temizlenir
 async function route() {
+  if (document.documentElement.dataset.locked) return;
   const v = ++routeId;
+  ++rfRequest; ++rfGen; readfyState.loading = false; readfyState.pendingManga = '';
   destroyPlayer();
+  main.onkeydown = null;
   if (_scrollIo) { _scrollIo.disconnect(); _scrollIo = null; }
   if (_cardIo) { _cardIo.disconnect(); _cardIo = null; }
   clearTimeout(heroTimer);
@@ -2452,28 +3817,46 @@ async function route() {
   const parts = path.split('/').filter(Boolean);
   const params = new URLSearchParams(query);
   const part = parts[0] || 'home';
-  $$('[data-nav]').forEach(a => a.toggleAttribute('aria-current', a.dataset.nav === part));
-  document.title = 'LOVELL';
+  const app = part === 'home' ? 'hub' : (TOOL_APPS.has(part) ? part : 'watch');
+  setApp(app);
+  if (app !== 'lovellify') stopMusic();
+  if (app !== 'speedfy') stopSpeed();
+  const navPart = part === 'watch' ? 'home' : part;
+  $$('[data-nav], [data-side-nav]').forEach(a => a.toggleAttribute('aria-current', (a.dataset.nav || a.dataset.sideNav) === navPart));
+  document.title = app === 'hub' || app === 'watch' ? 'LOVELL' : `${({lovellify: 'Lovellify', speedfy: 'Speedfy', readfy: 'Readfy', tavsiye: 'TavsiyerVerKnk'})[app] || 'LOVELL'} — LOVELL`;
   window.scrollTo(0, 0);
   // Canlı TV kendi temasıyla açılır; diğer sayfalarda seçili bölümün temasına dönülür.
   const live = part === 'canli';
-  document.documentElement.dataset.section = live ? 'livetv' : section;
-  syncTabs(live ? 'livetv' : section);
-  syncBottomNav(part);
-  $('#search-label').textContent = live ? 'Kanal ara' : S().search;
-  $('#foot-section').textContent = live ? 'Kanal listesi kamuya açık bir M3U listesinden gelir; yayınlar kanalların kendi sunucularındandır.' : section === 'anime' ? 'Anime bilgileri TMDB ve AniList’ten gelir.' : 'Film ve dizi bilgileri TMDB’den gelir.';
+  if (app === 'watch') {
+    document.documentElement.dataset.section = live ? 'livetv' : section;
+    syncTabs(live ? 'livetv' : section);
+    syncBottomNav(navPart);
+    $('#search-label').textContent = live ? 'Kanal ara' : S().search;
+  }
   if (liveModal && !live) liveModal.close(true);
   closeInfo(true);
   $$('dialog[open]').forEach(d => d.close());
-  if (part === 'izle' && /^(tv|movie|al)$/.test(parts[1]) && /^\d+$/.test(parts[2])) await viewWatch(v, parts[1], parts[2], params);
+  if (part === 'home') viewHub();
+  else if (part === 'lovellify') viewLovellify();
+  else if (part === 'speedfy') { viewSpeedfy(); loadSpeedBoard(); }
+  else if (part === 'readfy') viewReadfy();
+  else if (part === 'tools') viewToolsDownload();
+  else if (part === 'hafta') location.replace('#/watch');
+  else if (part === 'tavsiye') viewTavsiye();
+  else if (part === 'watch') await viewHome(v);
+  else if (part === 'izle' && /^(tv|movie|al)$/.test(parts[1]) && /^\d+$/.test(parts[2])) await viewWatch(v, parts[1], parts[2], params);
   else if (live) await viewLiveTV(v);
   else if (part === 'kesfet') await viewBrowse(v, 'tv', params);
   else if (part === 'filmler') await viewBrowse(v, 'movie', params);
   else if (part === 'listem') viewList(v, params);
-  else if (part === 'bilgisayarim' && !CLOUD) await viewLibrary(v);
-  else if (part === 'home') await viewHome(v);
+  else if (part === 'profil') viewProfile();
+  else if (part === 'bilgisayarim') location.replace('#/watch');
   else viewNotFound();
-  if (v === routeId) { main.focus({preventScroll: true}); pageEnter(); }
+  if (v === routeId) {
+    if (part === 'speedfy') $('#sf-input')?.focus({preventScroll: true});
+    else main.focus({preventScroll: true});
+    pageEnter();
+  }
 }
 // Eski adresleri (#watch?type=tv&id=1) yeni biçime çevir.
 if (/^#watch\?/.test(location.hash)) { const p = new URLSearchParams(location.hash.split('?')[1]); location.replace(`#/izle/${p.get('type') === 'movie' ? 'movie' : 'tv'}/${p.get('id')}`); }
@@ -2493,19 +3876,80 @@ $$('.tab-btn').forEach(b => b.addEventListener('click', async ev => {
     if ($('#search-dialog').open) { si.dispatchEvent(new Event('input')); }
     await loadGenres();
     // İzleme / Canlı TV sayfasından ya da bölüme özgü bir filtreden ayrılıp yeni bölüme git.
-    if (part === 'izle' || part === 'canli') location.hash = '#/';
+    if (part === 'izle' || part === 'canli' || part === 'home' || part === 'lovellify') location.hash = '#/watch';
     else if (query && /tur=/.test(query)) location.hash = `#/${part}`;
     else await route();
   });
 }));
-setSection(section);
 // Film & Dizi bölümünde üst çubuk vitrinin üstünde şeffaf durur, kaydırınca koyulaşır.
 const topBar = $('.top');
 const onScroll = () => topBar.classList.toggle('scrolled', scrollY > 24);
 addEventListener('scroll', onScroll, {passive: true});
 onScroll();
-Promise.all([
-  loadGenres(),
-  api('/api/status').then(s => { CLOUD = s.mode === 'cloud'; SUBS_ON = !!s.subs; document.documentElement.dataset.mode = CLOUD ? 'cloud' : 'local'; }).catch(() => {}),
-  refreshLibrary(false),
-]).finally(route);
+let booted = false;
+function startApp() {
+  if (document.documentElement.dataset.locked) return;
+  if (booted) { route(); return; }
+  booted = true;
+  setSection(section);
+  Promise.all([
+    loadGenres(),
+    api('/api/status').then(s => { CLOUD = s.mode === 'cloud'; SUBS_ON = !!s.subs; document.documentElement.dataset.mode = CLOUD ? 'cloud' : 'local'; }).catch(() => {}),
+  ]).finally(route);
+}
+async function enterWithKey(raw) {
+  const formatted = validProfileKey(raw);
+  const err = $('#entry-err');
+  if (!formatted) { if (err) err.textContent = 'Anahtar 20 karakter olmalı. I, O, 0 ve 1 kullanılmaz.'; return; }
+  const prev = profileKey;
+  profileKey = formatted;
+  try {
+    const remote = await apiSend('/api/profile', 'GET');
+    myList = mergeLists(myList, remote.list);
+    progress = mergeProgress(progress, remote.progress);
+    recent = mergeRecent(recent, remote.recent);
+    persistUser();
+    profile = metaOf(remote);
+    syncBase = remote.updatedAt;
+    store.set('profileKey', profileKey);
+    store.set('profileMeta', profile);
+    store.set('syncBase', syncBase);
+    store.set('syncDirty', false);
+    profileReady = true;
+    paintProfile();
+    updateCount();
+    delete document.documentElement.dataset.locked;
+    if (err) err.textContent = '';
+    startApp();
+  } catch (e) {
+    profileKey = prev;
+    if (!prev) { profile = null; store.set('profileKey', ''); store.set('profileMeta', null); }
+    document.documentElement.dataset.locked = '1';
+    if (err) err.textContent = e.status === 401 || /ait değil|gerekli/i.test(e.message || '') ? 'Bu anahtar geçersiz.' : (e.message || 'Giriş yapılamadı');
+  }
+}
+$('#entry-form')?.addEventListener('submit', e => {
+  e.preventDefault();
+  const btn = $('button', e.target);
+  if (btn) btn.disabled = true;
+  enterWithKey(new FormData(e.target).get('key')).finally(() => { if (btn) btn.disabled = false; });
+});
+(async () => {
+  document.documentElement.dataset.locked = '1';
+  if (!profileKey) {
+    const text = $('#entry-text'); if (text) text.textContent = 'Araç kutusuna girmek için anahtarını yaz.';
+    return;
+  }
+  const text = $('#entry-text'); if (text) text.textContent = 'Anahtar kontrol ediliyor…';
+  await loadProfile();
+  if (!profileKey) {
+    if (text) text.textContent = 'Kayıtlı anahtar artık geçersiz. Yenisini gir.';
+    return;
+  }
+  delete document.documentElement.dataset.locked;
+  startApp();
+})();
+addEventListener('pagehide', () => {
+  if (!profileKey || !store.get('syncDirty', false)) return;
+  fetch('/api/profile', {method: 'PUT', keepalive: true, headers: {'content-type': 'application/json', 'x-lovell-key': profileKey}, body: JSON.stringify({base: syncBase, name: profile?.name, color: profile?.color, avatar: profile?.avatar ?? '', list: myList, progress, recent})}).catch(() => {});
+});
