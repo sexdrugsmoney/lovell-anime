@@ -1,0 +1,7 @@
+{
+  "task_id": "task-two-section-embeds",
+  "task_description": "Siteyi Anime / Film & Dizi olarak iki ana bölüme ayır; 9 yeni embed sağlayıcı ekle (4 film/dizi + 3 anime); tab butonları, tab-aware routing ve embed chip stilleri dahil arayüzü zenginleştir.",
+  "status": "pending",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

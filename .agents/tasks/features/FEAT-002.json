@@ -1,0 +1,27 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Siteyi iki bölüme ayıran UI: index.html'e tab bar HTML ekle, src/style.css'e .tab-bar/.tab-btn stilleri + tab-fade animasyonu + embed chip pill stilleri ekle, src/main.js'e currentTab state + setTab() + viewHome/viewBrowse tab filtresi ekle, cache-bust ?v=5→?v=6 güncelle. Bu FEAT, FEAT-001'den bağımsızdır (worker değişikliklerine bağlı değil — embed listesi worker tarafından zaten filtreleniyor).",
+  "status": "pending",
+  "steps": [
+    "index.html oku. .top-inner içinde .logo'nun hemen ardına (nav'dan önce) .tab-bar div'ini ekle: iki button.tab-btn, data-tab='anime' ve data-tab='movies', ARIA role/aria-selected/type='button' ile. Arama input placeholder'ını 'Anime ara' → 'Ara...' yap (JS dinamik güncelleyecek). ?v=5 → ?v=6 (style.css ve main.js linkleri).",
+    "src/style.css oku. Dosyanın sonuna şu CSS bloklarını ekle: .tab-bar container stili (bg-2 background, border, border-radius, flex), .tab-btn base stili (transparent bg, dim color, font-weight:600), .tab-btn.active / [aria-selected='true'] stili (red bg, white color, box-shadow), @keyframes tab-fade animasyonu + .tab-content-enter class, source-chip pill güncellemesi (border-radius:20px, .on için box-shadow). Mevcut .source-chip kuralını EZme — sadece yeni özellikler ekle.",
+    "src/main.js oku. Dosyanın üstüne (store tanımlarından sonra) let currentTab = store.get('tab', 'anime') ekle. toggleList()'den sonra setTab(tab) fonksiyonu ekle: tab'ı store'a kaydet, .tab-btn butonlarını active/aria-selected güncelle, #search-input placeholder'ı güncelle, anasayfadaysa route() çağır. updateCount() çağrısının hemen altında $$.tab-btn forEach ile click listener ve setTab(currentTab) ile initial sync ekle. viewHome() içinde data alındıktan sonra hero/shelves'i tab'a göre filtrele (anime: olduğu gibi; movies: kind!=='al' filtresi). main.innerHTML'ye page div'ine tab-content-enter class'ı ekle. viewBrowse() başlığını tab'a göre güncelle: currentTab==='anime' için 'Anime dizileri' / 'Anime filmleri', movies için 'Diziler' / 'Filmler'.",
+    "Tüm değişikliklerden sonra worker syntax ve server import testlerini çalıştır."
+  ],
+  "acceptance_criteria": [
+    "index.html'de .tab-bar ve iki .tab-btn görünür, role='tablist' / role='tab' ARIA attribute'ları var.",
+    "src/style.css'de .tab-btn.active { background: var(--red) } kuralı var.",
+    "src/main.js'de currentTab değişkeni ve setTab() fonksiyonu var.",
+    "viewHome() içinde hero ve shelves tab'a göre filtreleniyor.",
+    "Tüm mevcut fonksiyonlar (viewWatch, viewList, viewLibrary, loadSources, mountEmbed) bozulmadan çalışıyor.",
+    "?v=6 cache-bust her iki linkte de güncellendi."
+  ],
+  "verification": [
+    "node --input-type=module --eval \"import('./worker/index.js').then(()=>console.log('worker OK')).catch(e=>{console.error(e);process.exit(1)})\"  — çıkış 0",
+    "node -e \"import('./server.js').then(()=>{setTimeout(()=>process.exit(0),1000)}).catch(e=>{console.error(e);process.exit(1)})\"  — çıkış 0",
+    "FEAT tamamlandığında bu dosyadaki status alanını 'completed' olarak güncelle ve findings'e doğrulama çıktısını yaz."
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

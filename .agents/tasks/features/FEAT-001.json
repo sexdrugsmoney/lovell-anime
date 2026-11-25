@@ -1,0 +1,25 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "worker/index.js buildEmbeds() fonksiyonuna 6 yeni embed sağlayıcı ekle: film/dizi için VidSrc.io, VidSrc.to, VidSrc.mov, VidLink; anime için VidHawk, JustPlay, AniEmbed. Mevcut 6 sağlayıcı (vidrift, vidplus, vidy, vidsrc/buzz, vidrock, megaplay) korunacak. deploy.yml'den stale CINEPRO_URL secret satırı kaldırılacak.",
+  "status": "pending",
+  "steps": [
+    "worker/index.js dosyasını oku ve buildEmbeds() içindeki mevcut yapıyı doğrula.",
+    "Film & Dizi bloğuna (kind !== 'al' koşulu içinde, VidRift bloğunun hemen altına) 4 sağlayıcı ekle: vidsrcio → https://vidsrc.io/embed/{movie|tv}/{id}[/{s}/{e}], vidsrcto → https://vidsrc.to/embed/{movie|tv}/{id}[/{s}/{e}], vidsrcmov → https://vidsrc.mov/embed/{movie|tv}/{id}[/{s}/{e}], vidlink → https://vidlink.pro/{movie|tv}/{id}[/{s}/{e}]?primaryColor={color}&title=true[&nextbutton=true].",
+    "Anime bloğuna (alId varsa, MegaPlay bloğunun hemen altına) 3 sağlayıcı ekle: vidhawk → https://vidhawk.buzz/embed/ani/{alId}/{episode}/sub?server=flow&autoskipIntro=1&autoskipOutro=1, justplay → https://justplay.boo/?ani={alId}&ep={episode}&lang=sub&autoskip=1, aniembed → https://aniembed.se/e/{alId}/{episode}.",
+    ".github/workflows/deploy.yml içindeki 'Set Worker Secrets' adımından CINEPRO_URL satırını kaldır (CinePro zaten kaldırıldı, bu satır hata verebilir).",
+    "Worker syntax doğrulaması çalıştır."
+  ],
+  "acceptance_criteria": [
+    "buildEmbeds('movie', '123', null, 1, 1, {}) çağrısı en az 7 embed döndürür (vidrift, vidplus, vidy, vidsrc, vidrock, vidsrcio, vidsrcto, vidsrcmov, vidlink).",
+    "buildEmbeds('al', '123', 456, 1, 5, {}) çağrısı en az 5 embed döndürür (vidplus, vidy, megaplay, vidhawk, justplay, aniembed).",
+    "worker/index.js import edildiğinde syntax hatası yok.",
+    "deploy.yml içinde CINEPRO_URL satırı yok."
+  ],
+  "verification": [
+    "node --input-type=module --eval \"import('./worker/index.js').then(()=>console.log('FEAT-001 OK')).catch(e=>{console.error(e);process.exit(1)})\"  — çıkış 0",
+    "FEAT tamamlandığında bu dosyadaki status alanını 'completed' olarak güncelle ve findings'e doğrulama çıktısını yaz."
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

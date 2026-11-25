@@ -3042,7 +3042,21 @@ const TOOLS = [
   {id: 'speedfy', href: '#/speedfy', kicker: 'Hız', title: 'Speedfy', mark: '03', line: 'WPM ve doğruluk.'},
   {id: 'readfy', href: '#/readfy', kicker: 'Manga', title: 'Readfy', mark: '04', line: 'Kaldığın sayfadan devam.'},
   {id: 'tavsiye', href: '#/tavsiye', kicker: 'Ruh hali', title: 'Tavsiye', mark: '05', line: 'Bugün ne izleyeceğin.'},
+  {id: 'okey', href: '#/okey', kicker: 'Oyun', title: 'Okey', mark: '06', line: '101, Katlamalı ve Düz Okey. Oda kur, arkadaşlarınla oyna.'},
 ];
+
+// Okey ayrı alan adında (okey.lovell.love) çalışır; anahtarla tek tıkla giriş bileti alıp oraya geçer.
+async function openOkey(params) {
+  main.innerHTML = `<div class="hub"><header class="hub-hero"><p class="eyebrow">Okey</p><h1>Masaya geçiliyor…</h1><p>Lovell anahtarınla giriş yapılıyor.</p></header></div>`;
+  try {
+    // okey.lovell.love giriş ekranından gelindiyse (ör. davet linki) aynı sayfaya dönülür
+    const data = await apiSend('/api/okey-ticket', 'POST', {next: params?.get('next') || '/'});
+    location.href = data.url;
+  } catch (e) {
+    toast(e.status === 401 ? 'Önce profil anahtarınla gir' : 'Okey açılamadı, tekrar dene', 'error');
+    location.hash = '#/home';
+  }
+}
 const DIST_SRC = {
   youtube_provided_line: 'YouTube teslim satırı',
   youtube_distribution_line: 'YouTube dağıtım satırı',
@@ -3068,7 +3082,7 @@ function setApp(app) {
   if (app !== 'speedfy') delete document.documentElement.dataset.sf;
 }
 
-const TOOL_APPS = new Set(['lovellify', 'speedfy', 'readfy', 'tavsiye', 'tools']);
+const TOOL_APPS = new Set(['lovellify', 'speedfy', 'readfy', 'tavsiye', 'tools', 'okey']);
 
 function stopMusic() {
   if (!musicAudio) return;
@@ -3083,7 +3097,7 @@ function viewHub() {
     <header class="hub-hero">
       <p class="eyebrow">Araç kutusu</p>
       <h1>${esc(name)}</h1>
-      <p>Beş araç. Bir anahtar.</p>
+      <p>Altı araç. Bir anahtar.</p>
     </header>
     <div class="hub-grid">${TOOLS.map(t => `
       <a class="hub-card" href="${t.href}" data-tool="${t.id}">
@@ -3843,6 +3857,7 @@ async function route() {
   else if (part === 'tools') viewToolsDownload();
   else if (part === 'hafta') location.replace('#/watch');
   else if (part === 'tavsiye') viewTavsiye();
+  else if (part === 'okey') await openOkey(params);
   else if (part === 'watch') await viewHome(v);
   else if (part === 'izle' && /^(tv|movie|al)$/.test(parts[1]) && /^\d+$/.test(parts[2])) await viewWatch(v, parts[1], parts[2], params);
   else if (live) await viewLiveTV(v);

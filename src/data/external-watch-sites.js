@@ -25,6 +25,14 @@ export function externalWatchSites(a) {
   {names: ['spy x family'], sites: [{site:'AniMedia',url:'https://animedia.digital/anime/spy-x-family',language:'Türkçe dublaj'}, {site:'SonAnime',url:'https://sonanime.com/anime/spy-x-family',language:'Türkçe dublaj'}]},
   {names: ['chainsaw man'], sites: [{site:'AnimODE',url:'https://animode.cloud/anime/chainsaw-man',language:'Türkçe dublaj'}, {site:'AniMedia',url:'https://animedia.digital/anime/chainsaw-man',language:'Türkçe dublaj'}]},
   {names: ['cyberpunk edge runners'], sites: [{site:'SonAnime',url:'https://sonanime.com/anime/cyberpunk-edgerunners',language:'Türkçe dublaj'}]},
+  {names: ['hunter x hunter'], sites: [{site:'SonAnime',url:'https://sonanime.com/anime/hunter-x-hunter',language:'Türkçe dublaj'}, {site:'AnimODE',url:'https://animode.cloud/anime/hunter-x-hunter',language:'Türkçe dublaj'}]},
+  {names: ['fullmetal alchemist'], sites: [{site:'SonAnime',url:'https://sonanime.com/anime/fullmetal-alchemist',language:'Türkçe dublaj'}, {site:'AniMedia',url:'https://animedia.digital/anime/fullmetal-alchemist',language:'Türkçe dublaj'}]},
+  {names: ['death note'], sites: [{site:'AnimODE',url:'https://animode.cloud/anime/death-note',language:'Türkçe dublaj'}, {site:'SonAnime',url:'https://sonanime.com/anime/death-note',language:'Türkçe dublaj'}]},
+  {names: ['vinland saga'], sites: [{site:'AniMedia',url:'https://animedia.digital/anime/vinland-saga',language:'Türkçe dublaj'}, {site:'SonAnime',url:'https://sonanime.com/anime/vinland-saga',language:'Türkçe dublaj'}]},
+  {names: ['made in abyss'], sites: [{site:'AnimODE',url:'https://animode.cloud/anime/made-in-abyss',language:'Türkçe dublaj'}]},
+  {names: ['mob psycho'], sites: [{site:'SonAnime',url:'https://sonanime.com/anime/mob-psycho-100',language:'Türkçe dublaj'}, {site:'AniMedia',url:'https://animedia.digital/anime/mob-psycho-100',language:'Türkçe dublaj'}]},
+  {names: ['link click','avi'], sites: [{site:'AnimODE',url:'https://animode.cloud/anime/link-click',language:'Türkçe dublaj'}]},
+  {names: ['wind breaker'], sites: [{site:'AniMedia',url:'https://animedia.digital/anime/wind-breaker',language:'Türkçe dublaj'}]},
  ];
 
  for (const anime of turkishDubAnime) {

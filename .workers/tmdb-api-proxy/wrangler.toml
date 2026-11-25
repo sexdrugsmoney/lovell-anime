@@ -1,0 +1,7 @@
+name = "lovell-tmdb-proxy"
+main = "worker.js"
+compatibility_date = "2025-09-01"
+
+# TMDB_API_KEY'i secret olarak eklemek için:
+#   npx wrangler secret put TMDB_API_KEY
+# Değer: 17f0fe645009122aedc492b86c1be458

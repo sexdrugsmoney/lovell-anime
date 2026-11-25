@@ -393,6 +393,16 @@ async function api(url, env) {
 // Geçit imza anahtarı: PROXY_SECRET yoksa mevcut gizli değerden türetilir (her dağıtımda aynı kalır)
 const proxySecret = env => env.PROXY_SECRET || (env.TMDB_READ_TOKEN ? `lovell-hls:${env.TMDB_READ_TOKEN}` : '');
 
+// okey.lovell.love tek tıkla giriş bileti: base64url(json).base64url(HMAC-SHA256) — okey/worker/auth.ts ile aynı biçim
+async function okeyTicket(secret, payload) {
+  const enc = new TextEncoder();
+  const b64 = bytes => btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const body = b64(enc.encode(JSON.stringify(payload)));
+  const key = await crypto.subtle.importKey('raw', enc.encode(secret), {name: 'HMAC', hash: 'SHA-256'}, false, ['sign']);
+  const sig = new Uint8Array(await crypto.subtle.sign('HMAC', key, enc.encode(body)));
+  return `${body}.${b64(sig)}`;
+}
+
 function profileKv(env) {
   const kv = env.PROFILES?.put ? env.PROFILES : env.MEDIA_SOURCES?.put ? env.MEDIA_SOURCES : null;
   return kv ? kvProfileStore(kv) : null;
@@ -466,6 +476,19 @@ export default {
       const store = profileKv(env);
       open = store && await profileOpen(store, requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie')));
       if (!open) return json({error: 'Anahtar gerekli'}, 401);
+    }
+    // Lovell Okey (okey.lovell.love) tek tıkla giriş: 2 dk geçerli, OKEY_SECRET ile imzalı bilet.
+    // Ham anahtar okey tarafına hiç gitmez; okey worker'ı imzayı doğrulayıp profili aynı KV'den okur.
+    if (url.pathname === '/api/okey-ticket') {
+      if (request.method !== 'POST') return json({error: 'Desteklenmeyen istek'}, 405);
+      if (!env.OKEY_SECRET) return json({error: 'Okey bağlantısı ayarlanmamış'}, 503);
+      const hash = await hashKey(requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie')));
+      if (!hash) return json({error: 'Anahtar gerekli'}, 401);
+      let body = {};
+      try { body = JSON.parse(await request.text() || '{}'); } catch {}
+      const next = /^\/[A-Za-z0-9/_\-?=&.]*$/.test(String(body.next || '')) && !String(body.next).startsWith('//') ? String(body.next) : '/';
+      const ticket = await okeyTicket(env.OKEY_SECRET, {h: hash, aud: 'okey', exp: Date.now() + 120000});
+      return json({url: `${env.OKEY_URL || 'https://okey.lovell.love'}/api/sso?t=${encodeURIComponent(ticket)}&next=${encodeURIComponent(next)}`});
     }
     if (url.pathname === '/api/music/lookup') {
       if (request.method !== 'POST') return json({error: 'Desteklenmeyen istek'}, 405);

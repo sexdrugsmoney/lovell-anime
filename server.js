@@ -207,6 +207,8 @@ export const server = http.createServer(async (req, res) => {
     open = await profileOpen(profiles, requestKey(req.headers['x-lovell-key'], req.headers.cookie));
     if (!open) return json(res, 401, {error: 'Anahtar gerekli'});
   }
+  // Yerel sürümde tek tıkla giriş bileti yok (KV paylaşılmıyor): Okey sitesi anahtarı kendisi sorar.
+  if (u.pathname === '/api/okey-ticket') return json(res, 200, {url: process.env.OKEY_URL || 'https://okey.lovell.love/'});
   if (u.pathname === '/api/music/lookup') {
     if (req.method !== 'POST') return json(res, 405, {error: 'Desteklenmeyen istek'});
     try {
