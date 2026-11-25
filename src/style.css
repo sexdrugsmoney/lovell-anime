@@ -1,20 +1,24 @@
 /* LOVELL — Fall-Llihc cam / şarap-siyah arayüz */
 :root {
-  --bg: #0d0707;
-  --bg-2: #160a0b;
-  --bg-3: #1a0c0d;
-  --line: rgba(255, 236, 236, .1);
-  --line-strong: rgba(255, 236, 236, .22);
-  --text: #f4efef;
-  --dim: #a89c9d;
-  --faint: #7d7071;
-  --red: #d61e2b;
+  --bg: #0a0a12;
+  --bg-2: #131322;
+  --bg-3: #1a1a2e;
+  --line: rgba(255, 100, 150, .08);
+  --line-strong: rgba(255, 100, 150, .18);
+  --text: #f0f0f8;
+  --dim: #9fa0a8;
+  --faint: #6d6e78;
+  --red: #ff006e;
   --red-ink: #ffffff;
-  --blue: #f0323e;
-  --stage: #080304;
-  --glass: rgba(26, 11, 12, .42);
-  --glass-line: rgba(255, 255, 255, .14);
-  --accent-soft: rgba(214, 30, 43, .16);
+  --blue: #00d4ff;
+  --stage: #0d0d15;
+  --glass: rgba(20, 20, 35, .55);
+  --glass-line: rgba(255, 150, 200, .12);
+  --accent-soft: rgba(255, 0, 110, .12);
+  --purple: #8338ec;
+  --cyan: #00d4ff;
+  --pink: #ff006e;
+  --lime: #3a86ff;
   --radius-s: 6px;
   --radius-m: 14px;
   --radius-l: 22px;
@@ -57,8 +61,11 @@ html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
   background:
-    radial-gradient(900px 420px at 12% -10%, color-mix(in srgb, var(--red) 18%, transparent), transparent 60%),
+    radial-gradient(900px 600px at 50% -20%, color-mix(in srgb, var(--pink) 12%, transparent), transparent 50%),
+    radial-gradient(800px 400px at 10% 100%, color-mix(in srgb, var(--purple) 10%, transparent), transparent 60%),
+    radial-gradient(700px 500px at 90% 50%, color-mix(in srgb, var(--cyan) 8%, transparent), transparent 70%),
     var(--bg);
+  background-attachment: fixed;
   color: var(--text);
   font: 400 16px/1.55 var(--body);
   -webkit-font-smoothing: antialiased;
@@ -84,8 +91,20 @@ main:focus, main:focus-visible { outline: none; }
 img { display: block; max-width: 100%; }
 a { color: inherit; text-decoration: none; }
 button, input, select { font: inherit; color: inherit; }
-button { cursor: pointer; }
-h1, h2, h3 { margin: 0; text-wrap: balance; }
+button {
+  cursor: pointer;
+  transition: all var(--transition-normal);
+  border: none;
+  font-weight: 600;
+}
+button:hover {
+  transform: translateY(-2px);
+  filter: brightness(1.1);
+}
+button:active {
+  transform: translateY(0px);
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; font-weight: 800; letter-spacing: -0.5px; }
 p { margin: 0; }
 code { font: 500 .9em ui-monospace, "Cascadia Code", Consolas, monospace; background: var(--bg-3); padding: .1em .4em; border-radius: 4px; overflow-wrap: anywhere; }
 :focus-visible {
@@ -2601,11 +2620,17 @@ html[data-app="watch"] .page { padding-top: 8px; }
 .hub-card[data-tool="okey"] { grid-area: okey; min-height: 150px; }
 .hub-card {
   position: relative; display: grid; align-content: end; gap: 8px; min-width: 0; min-height: 168px; padding: 18px 18px 20px;
-  border: 1px solid var(--glass-line); border-radius: 22px; overflow: hidden;
+  border: 2px solid var(--glass-line); border-radius: 22px; overflow: hidden;
   background:
-    linear-gradient(165deg, color-mix(in srgb, var(--tool) 28%, transparent), transparent 46%),
-    color-mix(in srgb, var(--bg-2) 92%, #000);
-  transition: transform .25s var(--ease), border-color .25s var(--ease);
+    linear-gradient(165deg, color-mix(in srgb, var(--tool) 32%, transparent), transparent 50%),
+    color-mix(in srgb, var(--bg-2) 95%, #000);
+  transition: transform .3s var(--ease), border-color .3s var(--ease), box-shadow .3s var(--ease);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+}
+.hub-card:hover {
+  transform: translateY(-6px) scale(1.01);
+  border-color: var(--tool);
+  box-shadow: 0 16px 40px rgba(255, 0, 110, 0.2);
 }
 .hub-card[data-tool="watch"] { min-height: 360px; padding: 28px 26px; }
 .hub-card[data-tool="watch"] h2 { font-size: clamp(3rem, 6vw, 4.6rem); }
