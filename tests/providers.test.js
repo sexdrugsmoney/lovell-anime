@@ -142,18 +142,22 @@ test('Dizi78 aramada yıl ve ad eşleşen filmin gömme oynatıcısını alır',
   assert.deepEqual(miss, []);
 });
 
-test('DiziYou Türkçe dublaj HLS adresini player id ile üretir', async () => {
+test('DiziYou dublaj ve Türkçe altyazılı HLS adreslerini player id ile üretir', async () => {
   globalThis.fetch = async url => {
     const u = String(url);
-    if (u.includes('/?s=')) return new Response('<div id="categorytitle"><a href="https://www.diziyou.one/breaking-bad/">Breaking Bad</a></div>');
-    if (u.includes('-1-sezon-1-bolum')) return new Response('<span class="diziyouOption" id="turkceDublaj"></span><iframe id="diziyouPlayer" src="https://www.diziyou.one/player/10551.html"></iframe>');
+    if (u.includes('/?s=')) return new Response('<a href="https://www.diziyou.love/breaking-bad2/">x</a><a href="https://www.diziyou.love/breaking-bad-5-sezon-16-bolum/">Breaking Bad</a>');
+    if (u.includes('breaking-bad-1-sezon-1-bolum')) return new Response('<span class="diziyouOption" id="turkceDublaj"></span><iframe id="diziyouPlayer" src="https://www.diziyou.love/player/10551.html"></iframe>');
+    if (u.endsWith('/subtitles/10551/tr.vtt')) return new Response('WEBVTT\n\n1');
     return new Response('', {status: 404});
   };
   const hit = await fetchDiziYouDub({kind: 'tv', titles: ['Breaking Bad'], season: 1, episode: 1});
-  assert.equal(hit.length, 1);
-  assert.equal(hit[0].url, 'https://storage.diziyou.one/episodes/10551_tr/play.m3u8');
+  assert.equal(hit.length, 2);
+  assert.equal(hit[0].url, 'https://storage.diziyou.love/episodes/10551_tr/play.m3u8');
   assert.equal(hit[0].dub, true);
   assert.equal(hit[0].name, 'DiziYou · Dublaj');
+  assert.equal(hit[1].url, 'https://storage.diziyou.love/episodes/10551/play.m3u8');
+  assert.equal(hit[1].dub, false);
+  assert.equal(hit[1].subtitles[0].lang, 'tr');
   assert.deepEqual(await fetchDiziYouDub({kind: 'movie', titles: ['Breaking Bad']}), []);
 });
 
