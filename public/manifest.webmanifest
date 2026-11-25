@@ -1,7 +1,7 @@
 {
   "name": "LOVELL",
   "short_name": "LOVELL",
-  "description": "Anime, film, dizi ve canlı TV — tek yerden keşfet ve izle.",
+  "description": "Anahtarlı araç kutusu: izle, Lovellify ve Speedfy.",
   "lang": "tr",
   "start_url": "/",
   "scope": "/",
@@ -12,9 +12,12 @@
     {"src": "/public/icon-192.png", "sizes": "192x192", "type": "image/png"},
     {"src": "/public/icon-512.png", "sizes": "512x512", "type": "image/png"},
     {"src": "/public/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
-    {"src": "/public/mark.svg", "sizes": "any", "type": "image/svg+xml"}
+    {"src": "/public/mark.png", "sizes": "243x243", "type": "image/png", "purpose": "any"}
   ],
   "shortcuts": [
+    {"name": "İzle", "url": "/#/watch"},
+    {"name": "Lovellify", "url": "/#/lovellify"},
+    {"name": "Speedfy", "url": "/#/speedfy"},
     {"name": "Canlı TV", "url": "/#/canli"},
     {"name": "Listem", "url": "/#/listem"}
   ]

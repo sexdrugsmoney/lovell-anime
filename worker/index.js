@@ -1,10 +1,15 @@
 // LOVELL — Cloudflare Workers sürümü.
 // Statik dosyalar (dist/) Workers Static Assets ile, /api/* uçları bu betikle sunulur.
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
-import {configure, browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
+import {configure, browse, search, home, detail, episodes, airingWeek, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
-import {buildEmbeds, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs, fetchDubSources} from '../lib/providers.js';
+import {buildEmbeds, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs, fetchDubSources, fetchDizi78Embed, fetchHdFilmizleEmbed, fetchZenkaiiReanime, fetchAnimecixEmbed} from '../lib/providers.js';
 import {handleHlsProxy, isHlsProxyPath} from '../lib/hls-proxy.js';
+import {kvProfileStore, profileRequest, requestKey, profileOpen, passCookie, clearPassCookie, normalizeKey, hashKey} from '../lib/profiles.js';
+import {adminConfig, adminRequest} from '../lib/admin.js';
+import {lookupMusic} from '../lib/music.js';
+import {searchManga, popularManga, mangaDetail, mangaChapters, chapterPages} from '../lib/readfy.js';
+import {submitSpeed, listSpeedBoard} from '../lib/speed.js';
 import trArchiveIndex from '../src/data/tr-archive-index.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
@@ -197,7 +202,7 @@ function safeSources(value) {
     }) : [];
     const declared = String(item.type || '').toLowerCase();
     const type = declared === 'dash' ? 'dash' : mediaType(url.href, declared);
-    return [{name: String(item.name || `Kaynak ${i + 1}`).slice(0, 90), url: url.href, type, subtitles}];
+    return [{name: String(item.name || `Kaynak ${i + 1}`).slice(0, 90), url: url.href, type, subtitles, origin: 'manifest', lang: item.dub === true ? 'tr' : String(item.lang || item.language || '').slice(0, 12), dub: item.dub === true}];
   });
 }
 async function cloudSources(env, key) {
@@ -281,6 +286,7 @@ async function api(url, env) {
   if (path === '/api/status') return json({mode: 'cloud', tmdb: authProblem ? 'anahtar geçersiz' : lastOk ? 'bağlı' : 'henüz denenmedi', authProblem, lastSuccess: lastOk, auth: env.TMDB_READ_TOKEN ? 'okuma jetonu (v4)' : env.TMDB_API_KEY ? 'API anahtarı' : 'yok', dataErrors, library: 0, subs: !!env.WYZIE_API_KEY});
   if (path === '/api/genres') return json(genresFor(q.get('section')), 200, 86400);
   if (path === '/api/home') return json(await home(q.get('section')), 200, 300);
+  if (path === '/api/week') return json(await airingWeek(), 200, 600);
   if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 200, 300);
   if (path === '/api/search') return json(await search(q.get('q'), q.get('section')), 200, 300);
   let m = path.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
@@ -335,21 +341,35 @@ async function api(url, env) {
       out.vidrift = out.embeds.find(e => e.id === 'vidrift')?.url || null;
     }
     if (phase !== 'fast') {
-      const info = kind === 'al' ? null : await Promise.race([detail(kind, id).catch(() => null), new Promise(r => setTimeout(r, 4000))]);
+      const info = await Promise.race([detail(kind, id).catch(() => null), new Promise(r => setTimeout(r, 4000))]);
       const hint = info ? {title: info.title, original: info.original, year: info.year, imdb: info.imdb} : null;
-      const remote = await fetchRemoteSources({kind, id, alId, season, episode, hint}, {
+      const trEmbed = hint && (!/^\d{4,5}$/.test(q.get('budget') || '') || Number(q.get('budget')) >= 7000);
+      const arcAl = kind === 'al' ? Number(id) : alId;
+      const [remote, diziEmbeds, filmizleEmbeds, reanimeEmbeds, cixEmbeds] = await Promise.all([
+        fetchRemoteSources({kind, id, alId, season, episode, hint}, {
         anthologyUrl: env.ANTHOLOGY_SCRAPER_URL,
         vidrockUrl: env.VIDROCK_RESOLVER_URL,
         cineproUrl: env.CINEPRO_URL,
         deadline: /^\d{4,5}$/.test(q.get('budget') || '') ? Math.min(20000, Math.max(2500, Number(q.get('budget')))) : 14000,
-        // CloseLoad yalnızca filmlerde; Worker içinde çalışır
         extra: [
-          ...(kind === 'movie' ? [{id: 'closeload', run: async () => normalizeSources(await fetchCloseLoad(id, env), 'closeload')}] : []),
-          // Türkçe dublaj (JetFilm, SelcukFlix): Worker'dan erişilir, akışlar imzalı HLS geçidinden oynar
-          ...(hint?.imdb ? [{id: 'dublaj', run: () => fetchDubSources({kind, id, imdb: hint.imdb, titles: [info.original, info.title], year: info.year, season, episode, origin: url.origin, secret: proxySecret(env)})}] : []),
+          ...(hint ? [{id: 'dublaj', run: () => fetchDubSources({kind, id, imdb: hint.imdb, titles: [info.original, info.title], year: info.year, season, episode, origin: url.origin, secret: proxySecret(env)})}] : []),
         ],
-      });
+      }),
+        trEmbed ? fetchDizi78Embed({kind, titles: [info.title, info.original], year: info.year, season, episode, timeout: 9000}).catch(() => []) : [],
+        trEmbed ? fetchHdFilmizleEmbed({kind, titles: [info.title, info.original], year: info.year, season, episode, timeout: 9000}).catch(() => []) : [],
+        arcAl ? fetchZenkaiiReanime({alId: arcAl, episode: animeEpisode || episode, timeout: 8000}).catch(() => []) : [],
+        (arcAl || malId || hint?.title) ? fetchAnimecixEmbed({
+          alId: arcAl, malId,
+          titles: [hint?.title, hint?.original].filter(Boolean),
+          year: hint?.year,
+          season: kind === 'al' ? 1 : season,
+          episode: animeEpisode || episode,
+          timeout: 8000,
+        }).catch(() => []) : [],
+      ]);
       out.sources = [...(out.sources || []), ...remote.sources];
+      const extraEmbeds = [...diziEmbeds, ...filmizleEmbeds, ...reanimeEmbeds];
+      if (cixEmbeds.length || extraEmbeds.length) out.embeds = [...cixEmbeds, ...(out.embeds || []), ...extraEmbeds];
       out.report = remote.report;
       out.timedOut = remote.timedOut;
     }
@@ -357,6 +377,14 @@ async function api(url, env) {
   }
   m = path.match(/^\/api\/subs\/(tv|movie)\/(\d{1,9})$/);
   if (m) return json({subtitles: await fetchTurkishSubs({kind: m[1], id: m[2], season: int(q.get('s')), episode: int(q.get('e')), key: env.WYZIE_API_KEY})}, 200, 3600);
+  if (path === '/api/readfy/search') return json(await searchManga(q.get('q')));
+  if (path === '/api/readfy/popular') return json(await popularManga(q.get('offset')), 200, 600);
+  m = path.match(/^\/api\/readfy\/manga\/([a-f0-9-]{16,48})\/chapters$/i);
+  if (m) return json(await mangaChapters(m[1], q.get('offset'), q.get('lang')));
+  m = path.match(/^\/api\/readfy\/manga\/([a-f0-9-]{16,48})$/i);
+  if (m) return json(await mangaDetail(m[1]));
+  m = path.match(/^\/api\/readfy\/chapter\/([a-f0-9-]{16,48})$/i);
+  if (m) return json(await chapterPages(m[1]));
   if (path === '/api/library' || path === '/api/rescan') return json({items: []});
   if (path === '/api/img') return image(url);
   return json({error: 'Bilinmeyen uç nokta'}, 404);
@@ -365,12 +393,118 @@ async function api(url, env) {
 // Geçit imza anahtarı: PROXY_SECRET yoksa mevcut gizli değerden türetilir (her dağıtımda aynı kalır)
 const proxySecret = env => env.PROXY_SECRET || (env.TMDB_READ_TOKEN ? `lovell-hls:${env.TMDB_READ_TOKEN}` : '');
 
+function profileKv(env) {
+  const kv = env.PROFILES?.put ? env.PROFILES : env.MEDIA_SOURCES?.put ? env.MEDIA_SOURCES : null;
+  return kv ? kvProfileStore(kv) : null;
+}
+
+function adminResponse(out) {
+  const headers = {'cache-control': 'no-store', 'x-robots-tag': 'noindex, nofollow', 'referrer-policy': 'no-referrer'};
+  if (out.cookie) headers['set-cookie'] = out.cookie;
+  if (out.html != null) {
+    headers['content-type'] = 'text/html; charset=utf-8';
+    return new Response(out.html, {status: out.status, headers});
+  }
+  headers['content-type'] = 'application/json; charset=utf-8';
+  return new Response(JSON.stringify(out.data || {}), {status: out.status, headers});
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
+    const gateConfig = adminConfig(env);
+    if (gateConfig && url.pathname === '/' + gateConfig.path) {
+      let body = {};
+      if (request.method === 'POST') {
+        const text = await request.text();
+        if (text.length > 350000) return json({error: 'İstek çok büyük'}, 413);
+        try { body = text ? JSON.parse(text) : {}; } catch { return json({error: 'Geçersiz JSON'}, 400); }
+      }
+      const store = profileKv(env);
+      if (!store) return json({error: 'Profil kaydı bu sunucuda kapalı'}, 503);
+      const out = await adminRequest({
+        method: request.method,
+        pathname: url.pathname,
+        cookieHeader: request.headers.get('cookie'),
+        body,
+        store,
+        ip: request.headers.get('cf-connecting-ip') || '',
+        secure: url.protocol === 'https:',
+        config: gateConfig,
+      });
+      return adminResponse(out);
+    }
+    const secure = url.protocol === 'https:';
+    if (url.pathname === '/api/profile') {
+      if (!['GET', 'POST', 'PUT', 'DELETE'].includes(request.method)) return json({error: 'Desteklenmeyen istek'}, 405);
+      const store = profileKv(env);
+      if (!store) return json({error: 'Profil kaydı bu sunucuda kapalı'}, 503);
+      let body = {};
+      if (request.method === 'POST' || request.method === 'PUT') {
+        const text = await request.text();
+        if (text.length > 350000) return json({error: 'İstek çok büyük'}, 413);
+        try { body = text ? JSON.parse(text) : {}; } catch { return json({error: 'Geçersiz JSON'}, 400); }
+      }
+      if (request.method === 'POST' && body?.leave) {
+        return new Response(JSON.stringify({ok: true}), {headers: {'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', 'set-cookie': clearPassCookie(secure)}});
+      }
+      const key = requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie'));
+      const out = await profileRequest({
+        method: request.method,
+        key,
+        body,
+        store,
+        ip: request.headers.get('cf-connecting-ip') || '',
+      });
+      const res = json(out.data, out.status);
+      const shown = normalizeKey(key);
+      if (shown && (out.status === 200 || out.status === 201)) res.headers.set('set-cookie', passCookie(shown, secure));
+      return res;
+    }
+    let open = null;
+    if (url.pathname.startsWith('/api/') || isHlsProxyPath(url.pathname)) {
+      const store = profileKv(env);
+      open = store && await profileOpen(store, requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie')));
+      if (!open) return json({error: 'Anahtar gerekli'}, 401);
+    }
+    if (url.pathname === '/api/music/lookup') {
+      if (request.method !== 'POST') return json({error: 'Desteklenmeyen istek'}, 405);
+      try {
+        const text = await request.text();
+        if (text.length > 4000) return json({error: 'İstek çok büyük'}, 413);
+        const body = text ? JSON.parse(text) : {};
+        return json(await lookupMusic(body?.urlOrId, env.SEARCHIFY_URL));
+      } catch (e) {
+        if (e instanceof SyntaxError) return json({error: 'Geçersiz JSON'}, 400);
+        return json({error: e.message || 'Parça bilgisi alınamadı'}, e.status || 502);
+      }
+    }
+    if (url.pathname === '/api/speed/result') {
+      if (request.method !== 'POST') return json({error: 'Desteklenmeyen istek'}, 405);
+      try {
+        const text = await request.text();
+        if (text.length > 4000) return json({error: 'İstek çok büyük'}, 413);
+        const body = text ? JSON.parse(text) : {};
+        const key = requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie'));
+        const hash = await hashKey(key);
+        const store = profileKv(env);
+        const out = await submitSpeed({store, hash, rec: open, body, ip: request.headers.get('cf-connecting-ip') || ''});
+        return json(out.data, out.status);
+      } catch (e) {
+        if (e instanceof SyntaxError) return json({error: 'Geçersiz JSON'}, 400);
+        return json({error: e.message || 'Kayıt alınamadı'}, e.status || 400);
+      }
+    }
+    if (url.pathname === '/api/speed/board') {
+      if (!['GET', 'HEAD'].includes(request.method)) return json({error: 'Desteklenmeyen istek'}, 405);
+      const key = requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie'));
+      const hash = await hashKey(key);
+      const store = profileKv(env);
+      const out = await listSpeedBoard({store, hash, duration: url.searchParams.get('duration'), lang: url.searchParams.get('lang')});
+      return json(out);
+    }
     if (!['GET', 'HEAD'].includes(request.method)) return json({error: 'Desteklenmeyen istek'}, 405);
-    // Referer isteyen dublaj akışları için imzalı geçit (yalnızca bu sitenin ürettiği adresler)
-    if (isHlsProxyPath(url.pathname)) return handleHlsProxy(proxySecret(env), url.pathname, request.headers.get('range'));
+    if (isHlsProxyPath(url.pathname)) return handleHlsProxy(proxySecret(env), url.pathname, request.headers.get('range'), url.search);
     if (url.pathname.startsWith('/api/')) {
       try {
         return await api(url, env);

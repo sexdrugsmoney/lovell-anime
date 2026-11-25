@@ -24,7 +24,13 @@ const copy = rel => {
   fs.mkdirSync(path.dirname(to), {recursive: true});
   fs.cpSync(from, to, {recursive: true});
 };
-['index.html', 'src', 'public'].forEach(copy);
+['index.html', 'src'].forEach(copy);
+const pubFrom = path.join(ROOT, 'public'), pubTo = path.join(dist, 'public');
+fs.mkdirSync(pubTo, {recursive: true});
+for (const name of fs.readdirSync(pubFrom)) {
+  if (name === 'posters') continue;
+  fs.cpSync(path.join(pubFrom, name), path.join(pubTo, name), {recursive: true});
+}
 console.log('  dist/ hazır');
 
 // 2) Giriş
@@ -43,7 +49,7 @@ if (run(['deploy']).code !== 0) { console.error('\nYayın başarısız oldu. Yuk
 
 step('TMDB anahtarı Worker\'a gizli olarak yükleniyor');
 const secrets = Object.fromEntries(
-  ['TMDB_READ_TOKEN', 'TMDB_API_KEY', 'TMDB_FALLBACK_URL', 'CINEPRO_URL', 'VIDRIFT_BRAND', 'VIDRIFT_COLOR', 'VIDRIFT_LOGO']
+  ['TMDB_READ_TOKEN', 'TMDB_API_KEY', 'TMDB_FALLBACK_URL', 'CINEPRO_URL', 'VIDRIFT_BRAND', 'VIDRIFT_COLOR', 'VIDRIFT_LOGO', 'ADMIN_PATH', 'ADMIN_PASSWORD']
     .map(k => [k, process.env[k]?.trim()])
     .filter(([, v]) => v)
 );
@@ -52,7 +58,8 @@ if (!Object.keys(secrets).length) {
 } else {
   const tmp = path.join(os.tmpdir(), `lovell-secrets-${process.pid}.json`);
   fs.writeFileSync(tmp, JSON.stringify(secrets), {mode: 0o600});
-  try { run(['secret', 'bulk', tmp]); } finally { fs.rmSync(tmp, {force: true}); }
+  try { if (run(['secret', 'bulk', tmp]).code !== 0) { console.error('Gizli ayarlar yüklenemedi; yayın doğrulanamadı.'); process.exitCode = 1; } } finally { fs.rmSync(tmp, {force: true}); }
 }
 
+if (process.exitCode) process.exit(process.exitCode);
 console.log('\n\x1b[1mBitti.\x1b[0m Site adresi yukarıda "https://lovell.<hesap-adın>.workers.dev" olarak yazıyor.\n');

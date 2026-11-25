@@ -1,6 +1,8 @@
 node_modules
 *.log
 .env
+data/profiles.json
+data/profiles.json.tmp
 streams.json
 media/*
 !media/BURAYA-VIDEO-KOY.txt

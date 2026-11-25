@@ -5,10 +5,16 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {ROOT} from './lib/env.js';
 import {tmdbGet, netStatus} from './lib/net.js';
-import {browse, search, home, detail, episodes, GENRES, genresFor, dataErrors} from './lib/catalog.js';
-import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs, PROXY_SECRET} from './lib/media.js';
+import {browse, search, home, detail, episodes, airingWeek, GENRES, genresFor, dataErrors} from './lib/catalog.js';
+import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs, dizi78Embeds, hdFilmizleEmbeds, zenkaiiReanimeEmbeds, animecixEmbeds, PROXY_SECRET} from './lib/media.js';
 import {Readable} from 'node:stream';
 import {handleHlsProxy, isHlsProxyPath} from './lib/hls-proxy.js';
+import {profileRequest, requestKey, profileOpen, passCookie, clearPassCookie, normalizeKey, hashKey} from './lib/profiles.js';
+import {fileProfileStore} from './lib/profile-store.js';
+import {adminConfig, adminRequest} from './lib/admin.js';
+import {lookupMusic} from './lib/music.js';
+import {searchManga, popularManga, mangaDetail, mangaChapters, chapterPages} from './lib/readfy.js';
+import {submitSpeed, listSpeedBoard} from './lib/speed.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -125,20 +131,117 @@ function decodeSubtitle(buf) {
 }
 
 const int = (v, d = 1) => (/^\d{1,4}$/.test(v || '') ? Number(v) : d);
+const profiles = fileProfileStore();
+
+async function readJson(req) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 350000) { const err = new Error('İstek çok büyük'); err.status = 413; throw err; }
+    chunks.push(chunk);
+  }
+  if (!chunks.length) return {};
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { const err = new Error('Geçersiz JSON'); err.status = 400; throw err; }
+}
 
 export const server = http.createServer(async (req, res) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-  if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, {error: 'Desteklenmeyen istek'});
   let u;
   try { u = new URL(req.url, 'http://localhost'); } catch { return json(res, 400, {error: 'Geçersiz adres'}); }
+  const gateConfig = adminConfig(process.env);
+  if (gateConfig && u.pathname === '/' + gateConfig.path) {
+    try {
+      const body = req.method === 'POST' ? await readJson(req) : {};
+      const gate = await adminRequest({
+        method: req.method,
+        pathname: u.pathname,
+        cookieHeader: req.headers.cookie,
+        body,
+        store: profiles,
+        ip: req.socket.remoteAddress || '',
+        secure: req.headers['x-forwarded-proto'] === 'https',
+        config: gateConfig,
+      });
+      if (gate.cookie) res.setHeader('Set-Cookie', gate.cookie);
+      res.setHeader('X-Robots-Tag', 'noindex, nofollow');
+      res.setHeader('Referrer-Policy', 'no-referrer');
+      if (gate.html != null) {
+        res.writeHead(gate.status, {'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store'});
+        return res.end(req.method === 'HEAD' ? undefined : gate.html);
+      }
+      return json(res, gate.status, gate.data || {});
+    } catch (e) {
+      return json(res, e.status || 400, {error: e.message || 'İstek başarısız'});
+    }
+  }
+  const secure = req.headers['x-forwarded-proto'] === 'https';
+  if (u.pathname === '/api/profile') {
+    if (!['GET', 'HEAD', 'POST', 'PUT', 'DELETE'].includes(req.method)) return json(res, 405, {error: 'Desteklenmeyen istek'});
+    try {
+      const body = req.method === 'POST' || req.method === 'PUT' ? await readJson(req) : {};
+      if (req.method === 'POST' && body?.leave) {
+        res.setHeader('Set-Cookie', clearPassCookie(secure));
+        return json(res, 200, {ok: true});
+      }
+      const key = requestKey(req.headers['x-lovell-key'], req.headers.cookie);
+      const out = await profileRequest({
+        method: req.method === 'HEAD' ? 'GET' : req.method,
+        key,
+        body,
+        store: profiles,
+        ip: req.socket.remoteAddress || '',
+      });
+      const shown = normalizeKey(key);
+      if (shown && (out.status === 200 || out.status === 201)) res.setHeader('Set-Cookie', passCookie(shown, secure));
+      return json(res, out.status, out.data);
+    } catch (e) {
+      return json(res, e.status || 400, {error: e.message || 'İstek başarısız'});
+    }
+  }
+  let open = null;
+  if (u.pathname.startsWith('/api/') || u.pathname.startsWith('/media/') || isHlsProxyPath(u.pathname)) {
+    open = await profileOpen(profiles, requestKey(req.headers['x-lovell-key'], req.headers.cookie));
+    if (!open) return json(res, 401, {error: 'Anahtar gerekli'});
+  }
+  if (u.pathname === '/api/music/lookup') {
+    if (req.method !== 'POST') return json(res, 405, {error: 'Desteklenmeyen istek'});
+    try {
+      const body = await readJson(req);
+      return json(res, 200, await lookupMusic(body?.urlOrId, process.env.SEARCHIFY_URL));
+    } catch (e) {
+      return json(res, e.status || 502, {error: e.message || 'Parça bilgisi alınamadı'});
+    }
+  }
+  if (u.pathname === '/api/speed/result') {
+    if (req.method !== 'POST') return json(res, 405, {error: 'Desteklenmeyen istek'});
+    try {
+      const body = await readJson(req);
+      const key = requestKey(req.headers['x-lovell-key'], req.headers.cookie);
+      const hash = await hashKey(key);
+      const out = await submitSpeed({store: profiles, hash, rec: open, body, ip: req.socket.remoteAddress || ''});
+      return json(res, out.status, out.data);
+    } catch (e) {
+      return json(res, e.status || 400, {error: e.message || 'Kayıt alınamadı'});
+    }
+  }
+  if (u.pathname === '/api/speed/board') {
+    if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, {error: 'Desteklenmeyen istek'});
+    const key = requestKey(req.headers['x-lovell-key'], req.headers.cookie);
+    const hash = await hashKey(key);
+    const out = await listSpeedBoard({store: profiles, hash, duration: u.searchParams.get('duration'), lang: u.searchParams.get('lang')});
+    return json(res, 200, out);
+  }
+  if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, {error: 'Desteklenmeyen istek'});
   const q = u.searchParams;
   try {
     // ---- API ----
     // Referer isteyen dublaj akışları için imzalı geçit
     if (isHlsProxyPath(u.pathname)) {
-      const r = await handleHlsProxy(PROXY_SECRET, u.pathname, req.headers.range);
+      const r = await handleHlsProxy(PROXY_SECRET, u.pathname, req.headers.range, u.search);
       res.writeHead(r.status, Object.fromEntries(r.headers));
       if (!r.body || req.method === 'HEAD') return res.end();
       return Readable.fromWeb(r.body).on('error', () => res.destroy()).pipe(res);
@@ -146,6 +249,7 @@ export const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/status') return json(res, 200, {...netStatus(), dataErrors, mediaDir: MEDIA_DIR(), library: library().length, subs: !!process.env.WYZIE_API_KEY});
     if (u.pathname === '/api/genres') return json(res, 200, genresFor(q.get('section')), 86400);
     if (u.pathname === '/api/home') return json(res, 200, await home(q.get('section')), 300);
+    if (u.pathname === '/api/week') return json(res, 200, await airingWeek(), 600);
     if (u.pathname === '/api/browse') return json(res, 200, await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 300);
     if (u.pathname === '/api/search') return json(res, 200, await search(q.get('q'), q.get('section')), 300);
     let m = u.pathname.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
@@ -172,12 +276,29 @@ export const server = http.createServer(async (req, res) => {
         out.vidrift = out.embeds.find(e => e.id === 'vidrift')?.url || null;
       }
       if (phase !== 'fast') {
-        const info = kind === 'al' ? null : await Promise.race([detail(kind, String(id)).catch(() => null), new Promise(r => setTimeout(r, 4000))]);
+        const info = await Promise.race([detail(kind, String(id)).catch(() => null), new Promise(r => setTimeout(r, 4000))]);
         const hint = info ? {title: info.title, original: info.original, year: info.year, imdb: info.imdb} : null;
         // ?budget=ms: istemci önce kısa bütçeyle (hızlı Türkçe kaynaklar), sonra tam bütçeyle sorar
         const budget = /^\d{4,5}$/.test(q.get('budget') || '') ? Math.min(20000, Math.max(2500, Number(q.get('budget')))) : 14000;
-        const remote = await remoteSources({kind, id, alId, season, episode, hint}, budget, `http://${req.headers.host || 'localhost'}`);
+        const trEmbed = hint && budget >= 7000;
+        const arcAl = kind === 'al' ? Number(id) : alId;
+        const [remote, diziEmbeds, filmizleEmbeds, reanimeEmbeds, cixEmbeds] = await Promise.all([
+          remoteSources({kind, id, alId, season, episode, hint}, budget, `http://${req.headers.host || 'localhost'}`),
+          trEmbed ? dizi78Embeds({kind, titles: [hint.title, hint.original], year: hint.year, season, episode, timeout: Math.min(budget, 9000)}) : [],
+          trEmbed ? hdFilmizleEmbeds({kind, titles: [hint.title, hint.original], year: hint.year, season, episode, timeout: Math.min(budget, 9000)}) : [],
+          arcAl ? zenkaiiReanimeEmbeds({alId: arcAl, episode: animeEpisode || episode, timeout: Math.min(budget, 8000)}) : [],
+          (arcAl || malId || hint?.title) ? animecixEmbeds({
+            alId: arcAl, malId,
+            titles: [hint?.title, hint?.original].filter(Boolean),
+            year: hint?.year,
+            season: kind === 'al' ? 1 : season,
+            episode: animeEpisode || episode,
+            timeout: Math.min(budget, 8000),
+          }) : [],
+        ]);
         out.sources = [...(out.sources || []), ...remote.sources];
+        const extraEmbeds = [...diziEmbeds, ...filmizleEmbeds, ...reanimeEmbeds];
+        if (cixEmbeds.length || extraEmbeds.length) out.embeds = [...cixEmbeds, ...(out.embeds || []), ...extraEmbeds];
         out.report = remote.report;
         out.timedOut = remote.timedOut;
       }
@@ -185,6 +306,14 @@ export const server = http.createServer(async (req, res) => {
     }
     m = u.pathname.match(/^\/api\/subs\/(tv|movie)\/(\d{1,9})$/);
     if (m) return json(res, 200, {subtitles: await turkishSubs({kind: m[1], id: Number(m[2]), season: int(q.get('s')), episode: int(q.get('e'))})}, 3600);
+    if (u.pathname === '/api/readfy/search') return json(res, 200, await searchManga(q.get('q')));
+    if (u.pathname === '/api/readfy/popular') return json(res, 200, await popularManga(q.get('offset')), 600);
+    m = u.pathname.match(/^\/api\/readfy\/manga\/([a-f0-9-]{16,48})\/chapters$/i);
+    if (m) return json(res, 200, await mangaChapters(m[1], q.get('offset'), q.get('lang')));
+    m = u.pathname.match(/^\/api\/readfy\/manga\/([a-f0-9-]{16,48})$/i);
+    if (m) return json(res, 200, await mangaDetail(m[1]));
+    m = u.pathname.match(/^\/api\/readfy\/chapter\/([a-f0-9-]{16,48})$/i);
+    if (m) return json(res, 200, await chapterPages(m[1]));
     if (u.pathname === '/api/library') return json(res, 200, {items: library()});    if (u.pathname === '/api/rescan') { scan(true); return json(res, 200, {items: library()}); }
     if (u.pathname === '/api/img') return imageProxy(u, res);
     if (u.pathname === '/api/sub') {

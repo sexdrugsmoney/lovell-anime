@@ -9,6 +9,8 @@ directory = "./dist"
 binding = "ASSETS"
 
 # Bölüm başına sahipli medya kaynakları. Örn. anahtar: tv:127532:1:1
+# Profil kayıtları aynı alanda profile:<özet> anahtarıyla durur.
+# Ayrı bir alan bağlamak istersen binding adı PROFILES olsun; o zaman o kullanılır.
 [[kv_namespaces]]
 binding = "MEDIA_SOURCES"
 id = "399909eecbd84a46b352f89ba67c758e"

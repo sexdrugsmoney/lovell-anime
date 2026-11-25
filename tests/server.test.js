@@ -25,13 +25,22 @@ before(async () => {
   fs.writeFileSync(path.join(media, 'tv-1', 'S01E02.webm'), Buffer.alloc(10));
   fs.writeFileSync(path.join(media, 'tv-1', 'S01E02.tr.srt'), Buffer.from('1\r\n00:00:01,000 --> 00:00:02,000\r\nT\xfcrk\xe7e alt yaz\xfd\r\n', 'latin1'));
   process.env.MEDIA_DIR = media;
+  process.env.PROFILES_FILE = path.join(media, 'profiles.json');
+  process.env.ADMIN_PASSWORD = 'test-password-1234';
+  process.env.ADMIN_PATH = 'a7k2m9qx4n8p1r6t3v5w';
   const {server} = await import('../server.js');
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   srv = server;
   base = `http://127.0.0.1:${server.address().port}`;
+  const gate = '/' + process.env.ADMIN_PATH;
+  const login = await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({op: 'login', password: process.env.ADMIN_PASSWORD})});
+  const adminCookie = login.headers.get('set-cookie').split(';')[0];
+  const created = await (await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json', cookie: adminCookie}, body: JSON.stringify({op: 'create', name: 'Test'})})).json();
+  pass = 'lovell_pass=' + encodeURIComponent(created.key);
 });
 after(() => new Promise(r => { fake.close(); srv.close(r); }));
-const get = p => fetch(base + p);
+let pass = '';
+const get = (p, extra = {}) => fetch(base + p, {...extra, headers: {...(pass ? {cookie: pass} : {}), ...(extra.headers || {})}});
 
 test('ana sayfa ve modüller doğru türde sunulur', async () => {
   const home = await get('/');
@@ -63,7 +72,7 @@ test('yayınlanmamış bölümler listelenmez', async () => {
 test('yerel video dosyaları bulunur, aralık isteği desteklenir', async () => {
   const p1 = await (await get('/api/play/tv/1?s=1&e=1&phase=fast')).json();
   assert.equal(p1.sources.length, 1);
-  const r = await fetch(base + p1.sources[0].url, {headers: {range: 'bytes=0-99'}});
+  const r = await get(p1.sources[0].url, {headers: {range: 'bytes=0-99'}});
   assert.equal(r.status, 206);
   assert.equal((await r.arrayBuffer()).byteLength, 100);
   const p2 = await (await get('/api/play/tv/1?s=1&e=2&phase=fast')).json();
@@ -76,6 +85,77 @@ test('yerel video dosyaları bulunur, aralık isteği desteklenir', async () => 
 test('görsel vekili rastgele sunuculara izin vermez, başlığı kaçışlar', async () => {
   for (const u of ['http://127.0.0.1/x', 'https://example.com/a.jpg']) assert.equal((await get('/api/img?u=' + encodeURIComponent(u))).status, 400);
   assert.equal((await get('/api/img?p=' + encodeURIComponent('/../../etc'))).status, 400);
+});
+test('profil anahtarını yalnızca gizli yönetici kapısı üretir', async () => {
+  const gate = '/' + process.env.ADMIN_PATH;
+  assert.equal((await fetch(base + '/api/home')).status, 401);
+  assert.equal((await fetch(base + '/api/play/tv/1?s=1&e=1')).status, 401);
+  assert.equal((await fetch(base + '/api/profile', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{}'})).status, 404);
+  assert.equal((await get('/yonetim')).status, 404);
+  const home = await get('/');
+  assert.equal((await home.text()).includes(process.env.ADMIN_PATH), false);
+  const client = await (await get('/src/main.js')).text();
+  assert.equal(client.includes(process.env.ADMIN_PATH), false);
+  assert.equal(client.includes('Anahtar üret'), false);
+  const page = await get(gate);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Parola/);
+  assert.equal(page.headers.get('x-robots-tag'), 'noindex, nofollow');
+  assert.equal((await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({op: 'login', password: 'yanlis-parola-123'})})).status, 401);
+  const login = await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({op: 'login', password: process.env.ADMIN_PASSWORD})});
+  assert.equal(login.status, 200);
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const created = await (await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json', cookie}, body: JSON.stringify({op: 'create', name: 'Deniz'})})).json();
+  assert.match(created.key, /^[A-Z2-9]{4}(?:-[A-Z2-9]{4}){4}$/);
+  assert.equal(created.profile.name, 'Deniz');
+  const headers = {'x-lovell-key': created.key};
+  const got = await (await fetch(base + '/api/profile', {headers})).json();
+  assert.equal(got.name, 'Deniz');
+  assert.equal((await fetch(base + '/api/profile', {headers: {'x-lovell-key': 'AAAA-AAAA-AAAA-AAAA-AAAA'}})).status, 401);
+  assert.equal((await fetch(base + '/api/profile', {method: 'DELETE', headers})).status, 404);
+  const people = await (await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json', cookie}, body: JSON.stringify({op: 'list'})})).json();
+  assert.equal(people.profiles[0].name, 'Deniz');
+  assert.equal((await fetch(base + gate, {method: 'POST', headers: {'content-type': 'application/json', cookie}, body: JSON.stringify({op: 'revoke', id: people.profiles[0].id})})).status, 200);
+  assert.equal((await fetch(base + '/api/profile', {headers})).status, 401);
+  assert.equal(fs.readFileSync(process.env.PROFILES_FILE, 'utf8').includes(created.key), false);
+  assert.equal((await fetch(base + '/api/status', {method: 'POST'})).status, 401);
+  assert.equal((await get('/api/status', {method: 'POST'})).status, 405);
+});
+test('Speedfy sıralaması anahtar ister, kaydeder ve karşılaştırır', async () => {
+  assert.equal((await fetch(base + '/api/speed/board')).status, 401);
+  assert.equal((await fetch(base + '/api/speed/result', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{}'})).status, 401);
+  const body = {duration: 30, lang: 'tr', wpm: 80, acc: 95, raw: 84, chars: {correct: 200, incorrect: 8, extra: 2, missed: 4}};
+  const res = await get('/api/speed/result', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify(body)});
+  assert.equal(res.status, 200);
+  const d = await res.json();
+  assert.equal(d.result.wpm, 80);
+  assert.equal(d.me.rank, 1);
+  assert.equal(d.board[0].you, true);
+  const board = await (await get('/api/speed/board?duration=30&lang=tr')).json();
+  assert.equal(board.board[0].wpm, 80);
+  assert.equal(board.me.name, 'Test');
+  const bad = await get('/api/speed/result', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({...body, wpm: 12})});
+  assert.equal(bad.status, 400);
+});
+test('Lovellify Searchify vekili anahtar ister ve sonucu döndürür', async () => {
+  assert.equal((await fetch(base + '/api/music/lookup', {method: 'POST', headers: {'content-type': 'application/json'}, body: '{"urlOrId":"x"}'})).status, 401);
+  const fakeSf = http.createServer((req, res) => {
+    res.writeHead(200, {'content-type': 'application/json'});
+    res.end(JSON.stringify({success: true, data: {trackId: 'abc', trackName: 'Parça', artists: 'Sanatçı', isrc: 'TRABC123', distributor: 'TuneCore'}}));
+  });
+  await new Promise(r => fakeSf.listen(0, '127.0.0.1', r));
+  const prev = process.env.SEARCHIFY_URL;
+  process.env.SEARCHIFY_URL = `http://127.0.0.1:${fakeSf.address().port}`;
+  try {
+    const res = await get('/api/music/lookup', {method: 'POST', headers: {'content-type': 'application/json'}, body: JSON.stringify({urlOrId: 'Sanatçı Şarkı'})});
+    assert.equal(res.status, 200);
+    const d = await res.json();
+    assert.equal(d.data.trackName, 'Parça');
+    assert.equal(d.data.distributor, 'TuneCore');
+  } finally {
+    process.env.SEARCHIFY_URL = prev;
+    await new Promise(r => fakeSf.close(r));
+  }
 });
 test('geçersiz kimlikler reddedilir', async () => {
   assert.equal((await get('/api/title/tv/abc')).status, 404);

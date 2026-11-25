@@ -1,6 +1,16 @@
 # LOVELL
 
-Anime keşif sitesi ve kişisel video oynatıcı. Anime bilgileri TMDB'den gelir; TMDB'ye ulaşılamazsa AniList'e, o da olmazsa yerel seçkiye geçilir.
+Anahtarlı araç kutusu. lovell.love açılınca önce profil anahtarı sorulur; doğru anahtardan sonra araçlar seçilir:
+
+- **İzle** — anime, film, dizi ve canlı TV. Anime bilgileri TMDB'den gelir; TMDB'ye ulaşılamazsa AniList'e, o da olmazsa yerel seçkiye geçilir. Anime sayfasında mangası görünür.
+- **Lovellify** — Spotify bağlantısı veya sanatçı + şarkı adıyla ISRC, etiket ve dağıtımcı sorgusu. Albüm ve çalma listesi bağlantısı toplu tarar. Altyapı, Cloudflare üzerindeki Searchify servisidir (`searchify.bextercontact.workers.dev`).
+- **Speedfy** — 15 / 30 / 60 saniyelik klavye hız testi (Türkçe veya İngilizce). Bitince WPM, doğruluk ve takıldığın harfler kaydı anahtarına yazılır; diğer anahtar sahipleriyle sıralama karşılaştırılır.
+- **Readfy** — MangaDex üzerinden manga okuyucu. Kaldığın bölüm ve sayfa bu tarayıcıda durur. Eşleşen animenin sayfasına köprü verir.
+- **TavsiyerVerKnk** — Ruh haline göre TMDB havuzundan rastgele bir başlık çeker.
+
+Görünüm koyu, açık veya Hello Kitty (pembemsi) olur. Ayarlardan anahtara özel vurgu rengi ve arkaplan seçilir; tercih hem bu tarayıcıda hem profilde saklanır.
+
+Yeni bir araç eklemek için `src/main.js` içindeki `TOOLS` dizisine bir kart yazıp `route()` içine o aracın görünümünü bağlaman yeterli.
 
 ## Çalıştırma
 
@@ -30,7 +40,7 @@ Her yol hem `api.themoviedb.org` hem de TMDB'nin diğer resmî adresi `api.tmdb.
 npm run doctor
 ```
 
-Bu komut her yolu tek tek dener ve hangisinin çalıştığını yazar. Sitenin alt kısmında da o anki veri kaynağı görünür.
+Bu komut her yolu tek tek dener ve hangisinin çalıştığını yazar.
 
 ### Hâlâ bağlanmıyorsa: ücretsiz Cloudflare Worker vekili
 
@@ -60,6 +70,14 @@ npm run yayinla
 İlk çalıştırmada tarayıcıda Cloudflare giriş sayfası açılır; "Allow" deyip terminale dön. Komut siteyi `dist` klasörüne hazırlar, Worker'ı yayınlar ve `.env` içindeki `TMDB_READ_TOKEN` / `TMDB_API_KEY` değerlerini Worker'a yükler. Sonunda `https://lovell.<hesap-adın>.workers.dev` adresini yazar. Güncelleme yaptıkça aynı komutu tekrar çalıştırman yeterli.
 
 İnternetteki sürüm bilgisayarındaki `media` klasörünü göremez; "Bilgisayarımda" sayfası orada gizlenir. Kendi videoların için yerel sürümü (`npm start`) kullan.
+
+## Profil anahtarı
+
+Anahtarı olmayan kimse siteye giremez. Katalog, arama ve videolar anahtar doğrulanmadan açılmaz. Giriş ekranı anahtarı sorar; doğru anahtar araç kutusunu açar. İzleyici kendi anahtarını üretemez. Anahtarı yalnızca yönetici verir. Yönetici sayfasının adresi sitede, menüde ve istemci kodunda yoktur. `.env` içindeki `ADMIN_PATH` o adresin yoludur, `ADMIN_PASSWORD` de parolasıdır. İkisi de dolu değilse kapı kapalıdır. Yol 18–64 küçük harf veya rakam olmalı, parola en az 12 karakter.
+
+Sayfadan bir ad yazıp anahtar üretirsin. Anahtar bir kez gösterilir. İzleyici onu Profil ekranına yapıştırır; izleyeceklerim listesi, kaldığı yer ve geçmiş o anahtara bağlanır. Aynı anahtar başka cihazda da aynı profili açar. Anahtarı iptal etmek yine bu sayfadandır.
+
+Sunucu ham anahtarı saklamaz, yalnızca özetini tutar. Yerelde kayıtlar `data/profiles.json` dosyasındadır. Cloudflare sürümünde kayıtlar `MEDIA_SOURCES` alanına `profile:` önekiyle yazılır; `npm run yayinla` `ADMIN_PATH` ve `ADMIN_PASSWORD` değerlerini de Worker sırrı olarak yükler.
 
 ## İzleme
 
@@ -93,7 +111,7 @@ Oynatıcı kaldığın saniyeyi hatırlar, altyazıyı otomatik açar, bölüm b
 }
 ```
 
-**3. Yasal platformlar.** Her animenin sayfasında Türkiye'de hangi platformda (Netflix, Crunchyroll, Disney+ vb.) yayınlandığı ve resmî yayın bağlantıları gösterilir. Bölge `WATCH_REGION` ile değiştirilebilir. Fragmanlar YouTube'dan açılır.
+**3. Fragmanlar.** Fragmanlar YouTube üzerinden açılır.
 
 ## Yapı
 
@@ -101,6 +119,7 @@ Oynatıcı kaldığın saniyeyi hatırlar, altyazıyı otomatik açar, bölüm b
 - `lib/net.js`: TMDB'ye engellere dayanıklı bağlantı
 - `lib/catalog-core.js`: TMDB → AniList → yerel seçki veri katmanı (Node ve Worker ortak)
 - `lib/catalog.js`: çekirdeği Node sunucusu için yapılandırır
+- `lib/readfy.js`: MangaDex arama ve bölüm sayfaları
 - `worker/index.js`, `wrangler.toml`, `scripts/deploy.mjs`: Cloudflare Workers sürümü
 
 ### CinePro Core kaynağı
