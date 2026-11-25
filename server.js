@@ -9,6 +9,7 @@ import {browse, search, home, detail, episodes, airingWeek, GENRES, genresFor, d
 import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs, dizi78Embeds, hdFilmizleEmbeds, zenkaiiReanimeEmbeds, animecixEmbeds, PROXY_SECRET} from './lib/media.js';
 import {Readable} from 'node:stream';
 import {handleHlsProxy, isHlsProxyPath} from './lib/hls-proxy.js';
+import {isTurkishSource, isTurkishEmbed} from './lib/providers.js';
 import {profileRequest, requestKey, profileOpen, passCookie, clearPassCookie, normalizeKey, hashKey} from './lib/profiles.js';
 import {fileProfileStore} from './lib/profile-store.js';
 import {adminConfig, adminRequest} from './lib/admin.js';
@@ -304,6 +305,10 @@ export const server = http.createServer(async (req, res) => {
         out.report = remote.report;
         out.timedOut = remote.timedOut;
       }
+      // Yalnızca Türkçe dublaj ya da Türkçe altyazılı kaynaklar gönderilir.
+      if (out.sources) out.sources = out.sources.filter(s => s.origin === 'local' || s.origin === 'manifest' || isTurkishSource(s));
+      if (out.embeds) out.embeds = out.embeds.filter(isTurkishEmbed);
+      out.vidrift = null;
       return json(res, 200, out);
     }
     m = u.pathname.match(/^\/api\/subs\/(tv|movie)\/(\d{1,9})$/);

@@ -178,13 +178,12 @@ test('query biçimli vekil (?endpoint=) doğru adrese çevrilir', async () => {
   assert.equal(u.searchParams.get('with_keywords'), '210024');
   assert.equal(u.searchParams.get('api_key'), null);
 });
-test('oynatma uç noktası: hızlı aşama embed adreslerini ağ isteği olmadan döndürür', async () => {
+test('oynatma uç noktası: hızlı aşama yalnızca Türkçe embed döndürür', async () => {
   const t0 = Date.now();
   const p = await (await get('/api/play/tv/1?s=1&e=2&alId=151807&phase=fast')).json();
   assert.ok(Date.now() - t0 < 1500);
-  assert.ok(p.embeds.some(e => e.id === 'framex' && e.url.includes('/embed/tv/1/1/2')));
-  assert.ok(p.embeds.some(e => e.id === 'megaplay-dub'));
-  assert.equal(p.embeds[0].anime, true);
-  assert.equal(p.vidrift?.includes('/embed/tv/1/1/2'), true);
+  assert.ok(p.embeds.every(e => e.tr === true || /^tr/i.test(e.lang || '')));
+  assert.ok(!p.embeds.some(e => /vidsrc|vidly|videasy|framex|megaplay/i.test(e.url)));
+  assert.equal(p.vidrift, null);
   assert.equal(p.report, undefined);
 });

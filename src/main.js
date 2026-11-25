@@ -1130,16 +1130,20 @@ function viewToolsDownload() {
     <section class="tools-details"><h2>Sürüm notları</h2><p>Henüz indirilebilir bir sürüm bulunmuyor. Kurulum adımları ve değişiklikler ilk sürümle birlikte burada yer alacak.</p></section></div>`;
 }
 
+// Yalnızca Türkçe dublaj ya da Türkçe altyazılı kaynaklar gösterilir (sunucu da aynı süzgeci uygular).
+const isTrLang = v => /^(tr|tur|turkish|türkçe)(?:[-_]|$)/i.test(String(v || ''));
+const trSource = s => !!s && (s.origin === 'local' || s.origin === 'manifest' || isTrLang(s.lang) || s.tr === true || (s.subtitles || []).some(t => isTrLang(t?.lang || t?.language)));
+const trEmbed = e => !!e && (isTrLang(e.lang) || e.tr === true);
 async function loadSources(ctx) {
   $('#stage').querySelector('.stage-inner').innerHTML = `<div class="loading" role="status"><span class="spin"></span>Kaynaklar hazırlanıyor…</div>`;
   let d;
   try { d = await api(playPath(ctx, 'fast'), 20000); } catch { d = {sources: [], embeds: [], folder: `${ctx.a.kind}-${ctx.a.id}`}; }
   if (ctx.v !== routeId) return;
   // Oynatıcı yalnızca kullanıcının kendi veya yayın izni olan video adreslerini açar.
-  ctx.sources = d.sources || [];
-  ctx.embeds = rankEmbeds(d.embeds || []);
+  ctx.sources = (d.sources || []).filter(trSource);
+  ctx.embeds = rankEmbeds((d.embeds || []).filter(trEmbed));
   ctx.folder = d.folder;
-  ctx.vidrift = d.vidrift || ctx.embeds.find(e => e.id === 'vidrift')?.url || null;
+  ctx.vidrift = null;
   ctx.mode = null;
   ctx.remote = ctx.sources.length ? 'skip' : 'loading';
   paintSourceAvailability(ctx);   // kendi dosyan varsa başka kaynak aramaya gerek yok
@@ -1171,9 +1175,9 @@ async function fetchRemote(ctx, budget = 0) {
   // İmzalı adresler her istekte değişebilir; aynı kaynak + ad ikinci kez eklenmez.
   const sig = x => `${x.origin || ''}|${x.name}`;
   const known = new Set((ctx.sources || []).flatMap(x => [x.url, sig(x)]));
-  const fresh = (d.sources || []).filter(x => !known.has(x.url) && !known.has(sig(x)) && known.add(sig(x)));
+  const fresh = (d.sources || []).filter(trSource).filter(x => !known.has(x.url) && !known.has(sig(x)) && known.add(sig(x)));
   const knownEmbed = new Set((ctx.embeds || []).map(e => e.url));
-  const freshEmbeds = (d.embeds || []).filter(e => e?.url && !knownEmbed.has(e.url));
+  const freshEmbeds = (d.embeds || []).filter(trEmbed).filter(e => e?.url && !knownEmbed.has(e.url));
   if (freshEmbeds.length) {
     const combined = [...(ctx.embeds || []), ...freshEmbeds];
     // Açık iframe'in indeksi ve olay dinleyicileri arka plan sorgusuyla değişmemeli.
@@ -1346,8 +1350,8 @@ function emptyStage(ctx) {
   $('#stage').innerHTML = `<div class="stage-inner stage-empty">
     ${a.backdrop ? `<img class="stage-bg" src="${esc(a.backdrop)}" alt="" data-fb>` : ''}
     <div class="stage-msg">
-      <h2>${label} için video dosyası yok</h2>
-      <p>Bu bölüm için sitede oynatılabilir bir kaynak bulunamadı.</p>
+      <h2>${label} kaldırıldı</h2>
+      <p>Türkçe dublajı veya Türkçe altyazısı bulunamadığı için ${isMovie(a) ? 'bu film' : 'bu bölüm'} kaldırılmıştır.</p>
       <div class="actions">
         ${a.trailer ? `<button class="btn btn-ghost" data-trailer>${PLAY}Fragmanı izle</button>` : ''}
       </div>

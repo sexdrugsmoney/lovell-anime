@@ -3,7 +3,7 @@
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
 import {configure, browse, search, home, detail, episodes, airingWeek, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
-import {buildEmbeds, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs, fetchDubSources, fetchDizi78Embed, fetchHdFilmizleEmbed, fetchZenkaiiReanime, fetchAnimecixEmbed} from '../lib/providers.js';
+import {buildEmbeds, isTurkishSource, isTurkishEmbed, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs, fetchDubSources, fetchDizi78Embed, fetchHdFilmizleEmbed, fetchZenkaiiReanime, fetchAnimecixEmbed} from '../lib/providers.js';
 import {handleHlsProxy, isHlsProxyPath} from '../lib/hls-proxy.js';
 import {kvProfileStore, profileRequest, requestKey, profileOpen, passCookie, clearPassCookie, normalizeKey, hashKey} from '../lib/profiles.js';
 import {adminConfig, adminRequest} from '../lib/admin.js';
@@ -373,6 +373,10 @@ async function api(url, env) {
       out.report = remote.report;
       out.timedOut = remote.timedOut;
     }
+    // Yalnızca Türkçe dublaj ya da Türkçe altyazılı kaynaklar gönderilir.
+    if (out.sources) out.sources = out.sources.filter(s => s.origin === 'local' || s.origin === 'manifest' || isTurkishSource(s));
+    if (out.embeds) out.embeds = out.embeds.filter(isTurkishEmbed);
+    out.vidrift = null;
     return json(out);
   }
   m = path.match(/^\/api\/subs\/(tv|movie)\/(\d{1,9})$/);

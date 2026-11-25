@@ -1,66 +1,28 @@
 import {test, afterEach} from 'node:test';
 import assert from 'node:assert/strict';
-import {buildEmbeds, fetchRemoteSources, fetchDizi78Embed, fetchHdFilmizleEmbed, fetchZenkaiiReanime, fetchAnimecixEmbed, fetchDiziYouDub, fetchDizillaDub, fetchHdFilmCehennemiDub, fetchFullHdDub, fetchCloseLoadDub, normalizeSources, resetProviderState} from '../lib/providers.js';
+import {buildEmbeds, isTurkishSource, isTurkishEmbed, fetchRemoteSources, fetchDizi78Embed, fetchHdFilmizleEmbed, fetchZenkaiiReanime, fetchAnimecixEmbed, fetchDiziYouDub, fetchDizillaDub, fetchHdFilmCehennemiDub, fetchFullHdDub, fetchCloseLoadDub, normalizeSources, resetProviderState} from '../lib/providers.js';
 
 const realFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = realFetch; resetProviderState(); });
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const jsonRes = (data, status = 200) => ({ok: status < 400, status, json: async () => data});
 
-test('embed adresleri: film, dizi ve anime biçimleri', () => {
-  const movie = buildEmbeds('movie', 372058, null, 1, 1, {});
-  const frame = movie.find(e => e.id === 'framex');
-  assert.equal(frame.url, 'https://framextv.xyz/embed/movie/372058?autoplay=1');
-  const tv = buildEmbeds('tv', 94605, null, 2, 7, {});
-  assert.equal(tv.find(e => e.id === 'framex').url, 'https://framextv.xyz/embed/tv/94605/2/7?autoplay=1');
-  assert.ok(tv.every(e => e.url.startsWith('https://') && e.kind === 'embed'));
-  assert.ok(!tv.some(e => e.anime), 'AniList id yoksa anime oynatıcıları eklenmez');
-  assert.equal(new Set(tv.map(e => e.url)).size, tv.length, 'adresler tekrarlanmaz');
-  // Ölçümle eklenen oynatıcıların adres biçimleri
-  assert.equal(tv.find(e => e.id === 'cinesrc').url, 'https://cinesrc.st/embed/tv/94605?s=2&e=7');
-  assert.equal(tv.find(e => e.id === 'viduki-s1').url, 'https://viduki.net/api/1/tv/?id=94605&s=2&e=7');
-  assert.equal(movie.find(e => e.id === 'vidsrcru').url, 'https://vidsrc-embed.ru/embed/movie/372058');
-  assert.equal(tv.find(e => e.id === 'vidsrcru').url, 'https://vidsrc-embed.ru/embed/tv/94605/2-7');
-  assert.equal(movie.find(e => e.id === 'vidstorm').url, 'https://vidstorm.ru/movie/372058');
-  assert.equal(movie.find(e => e.id === 'vidlove').url, 'https://player.vidlove.cc/embed/movie/372058');
-  assert.equal(tv.find(e => e.id === 'vidlove').url, 'https://player.vidlove.cc/embed/tv/94605/2/7');
-  assert.equal(movie.find(e => e.id === 'cinemaos').url, 'https://cinemaos.tech/player/372058?lang=en');
-  assert.equal(tv.find(e => e.id === 'cinemaos').url, 'https://cinemaos.tech/player/94605/2/7?lang=en');
-  assert.equal(movie.find(e => e.id === 'vidly').url, 'https://vidly.pro/movie/372058?color=e4202b');
-  assert.equal(tv.find(e => e.id === 'vidsrcparty').url, 'https://vidsrc.party/embed/tv/94605/2/7');
-  assert.equal(movie.find(e => e.id === 'videasy-ws').url, 'https://player.videasy.ws/embed/movie/372058');
-  assert.ok(tv.findIndex(e => e.backup) > tv.findIndex(e => e.id === 'vidstorm'), 'doğrulananlar yedeklerden önce');
+test('yabancı dildeki embed oynatıcıları üretilmez', () => {
+  for (const [kind, id, alId] of [['movie', 372058, null], ['tv', 94605, null], ['tv', 127532, 151807], ['al', 21, null]]) {
+    const list = buildEmbeds(kind, id, alId, 1, 1, {malId: 52299});
+    assert.ok(list.every(e => isTurkishEmbed(e)), `${kind}/${id} yalnızca Türkçe embed döner`);
+    assert.ok(!list.some(e => /vidsrc|vidly|videasy|2embed|anixo|megaplay/i.test(e.url)));
+  }
 });
 
-test('anime embed adresleri önce gelir; altyazılı ve dublaj ayrı listelenir', () => {
-  const list = buildEmbeds('tv', 127532, 151807, 1, 3, {brandColor: '#ff3d7f', malId: 52299});
-  assert.equal(list[0].anime, true);
-  assert.equal(list[0].backup, undefined, 'ilk sıradaki oynatıcı doğrulanmış olmalı');
-  const ids = list.map(e => e.id);
-  // Doğrulanmış oynatıcılar yedeklerin önünde
-  assert.ok(ids.indexOf('anixo-sub') < ids.indexOf('megaplay-sub'));
-  assert.ok(list.slice(ids.findIndex(() => true), list.findIndex(e => e.backup)).every(e => !e.backup));
-  assert.ok(list.slice(list.findIndex(e => e.backup)).every(e => e.backup), 'yedekler en sonda');
-  assert.equal(list.find(e => e.id === 'megaplay-sub').backup, undefined);
-  assert.equal(list.find(e => e.id === 'megaplay-dub').url, 'https://megaplay.buzz/stream/ani/151807/3/dub');
-  assert.equal(list.find(e => e.id === 'megaplay-sub').url, 'https://megaplay.buzz/stream/mal/52299/3/sub');
-  assert.equal(list.find(e => e.id === 'yumezone-sub').url, 'https://yumezone.qzz.io/embed/megaplay/ani/151807/3/sub');
-  assert.match(list.find(e => e.id === 'vidhawk-dub').url, /vidhawk\.buzz\/embed\/ani\/151807\/3\/dub/);
-  assert.equal(list.find(e => e.id === 'vidly-anime-sub').url, 'https://vidly.pro/anime/151807/3?color=ff3d7f&audio=sub');
-  assert.equal(list.find(e => e.id === 'videasy-ws-anime').url, 'https://player.videasy.ws/embed/anime/151807/3');
-  assert.equal(list.find(e => e.id === 'supaplay-mal-sub').url, 'https://supaplay.fun/stream/mal/52299/3/sub');
-  assert.equal(list.find(e => e.id === 'anixo-dub').url, 'https://anixo.buzz/embed/ani/151807/3/dub?color=%23ff3d7f');
-  assert.match(list.find(e => e.id === 'zoko-sub').url, /^https:\/\/zokoanime\.video\/stream\/mal\/52299\/3\/sub\?/);
-  assert.equal(list.find(e => e.id === 'zoko-sub').resume, 'time');
-  assert.match(list.find(e => e.id === 'aniflow-dub').url, /^https:\/\/api\.aniflow\.cc\/embed\/ani\/151807\/3\/dub\?/);
-  // MAL id'si yoksa Zoko AniList yolunu kullanır
-  assert.match(buildEmbeds('tv', 127532, 151807, 1, 3, {}).find(e => e.id === 'zoko-sub').url, /\/stream\/anilist\/151807\/3\/sub/);
-  // Anime TMDB dizisi olduğu için genel oynatıcılar da var
-  assert.ok(list.some(e => e.id === 'framex'));
-  // AniList sayfasından açılan başlıkta (kind=al) TMDB oynatıcıları yok
-  const al = buildEmbeds('al', 21, null, 1, 5, {});
-  assert.ok(al.length > 0 && al.every(e => e.anime));
-  assert.match(al[0].url, /\/21\/5\//);
+test('Türkçe süzgeç: dublaj ve Türkçe altyazı izi kalır, diğer diller elenir', () => {
+  assert.equal(isTurkishSource({name: 'JetFilm · Dublaj', lang: 'tr', dub: true}), true);
+  assert.equal(isTurkishSource({name: 'Orijinal ses', lang: 'en', subtitles: [{lang: 'tr', url: 'https://x/tr.vtt'}]}), true);
+  assert.equal(isTurkishSource({name: 'MovieBoxIN Hindi Audio (CNC) · 1080p', lang: 'hi'}), false);
+  assert.equal(isTurkishSource({name: 'Orijinal ses', subtitles: [{lang: 'en'}]}), false);
+  assert.equal(isTurkishEmbed({id: 'tr-arsiv', tr: true, lang: 'sub'}), true);
+  assert.equal(isTurkishEmbed({id: 'vidly', name: 'Vidly'}), false);
+  assert.equal(isTurkishEmbed({id: 'anixo-sub', lang: 'sub', anime: true}), false);
 });
 
 test('Zenkaii ReAnime gömüsü FlixCloud adresine yönlendirir', async () => {
