@@ -4301,6 +4301,35 @@ function viewNotFound() {
   main.innerHTML = `<div class="page">${emptyState({icon: 'lost', title: 'Bu sayfa bulunamadı', text: 'Adres değişmiş ya da yanlış yazılmış olabilir. Ana sayfaya dönebilir ya da aradığını arayabilirsin.', actions: '<a class="btn btn-play" href="#/">Araç kutusuna dön</a><a class="btn btn-ghost" href="#/watch">İzlemeye geç</a>', cls: 'state-404'})}</div>`;
 }
 
+// ---- Kaydırma: bölümler görünür olunca belirir (üst çubuğun koyulaşması aşağıdaki topBar dinleyicisinde) ----
+// Tek IntersectionObserver; "hareketi azalt" açıksa kaydırma olmadan yalnızca solarak gelir (CSS).
+{
+  if ('IntersectionObserver' in window) {
+    const io = new IntersectionObserver(entries => entries.forEach(e => {
+      if (!e.isIntersecting) return;
+      e.target.classList.add('in');
+      io.unobserve(e.target);
+    }), {rootMargin: '0px 0px -6% 0px', threshold: 0});   // 0: çok uzun bölümler (Canlı TV kanal listesi) de belirir
+    // Sayfa değişince yeni bölümleri bul. MutationObserver ekranı çizmeden önce çalışır, böylece
+    // zaten görünen bölümler bir an görünüp sonra kaybolmaz.
+    const SECTIONS = '.page > *:not(.reveal), .mood > *:not(.reveal):not(.hub-hero)';
+    let moodShown = -1;   // Tavsiye her tıklamada yeniden çizilir: yalnızca o ziyaretin ilk çiziminde belirsin
+    const scan = () => {
+      const moodAgain = moodShown === routeId;
+      $$(SECTIONS, main).forEach(el => {
+        if (el.matches('.page-head, .loading, [role="status"]')) return;
+        if (el.parentElement?.classList.contains('mood')) {
+          if (moodAgain) { el.classList.add('reveal', 'in'); return; }
+          moodShown = routeId;
+        }
+        el.classList.add('reveal');
+        io.observe(el);
+      });
+    };
+    new MutationObserver(scan).observe(main, {childList: true, subtree: true});
+  }
+}
+
 // ---- Bağlantı durumu ----
 addEventListener('offline', () => { document.documentElement.classList.add('is-offline'); toast('İnternet bağlantısı kesildi', 'error'); });
 addEventListener('online', () => { document.documentElement.classList.remove('is-offline'); toast('Bağlantı geri geldi', 'success'); if (main.querySelector('[data-retry]')) { apiCache.clear(); route(); } });

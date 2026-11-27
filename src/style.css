@@ -3147,3 +3147,149 @@ dialog.reels::backdrop { background: rgba(0, 0, 0, .9); }
 .mood-more-head h2 { font-size: clamp(18px, 1.4vw, 22px); }
 .mood-more-head .btn { margin-left: auto; }
 .mood-more { margin-bottom: 8px; }
+
+
+/* =====================================================================
+   Sade düzen (izleme bölümü): üstte yatay menü, tam genişlikte vitrin,
+   ilk satır vitrinin altına biner. Bu blok en sonda durur ve yukarıdaki
+   yan menü / cam görünüm kurallarını ezer; kaldırılırsa eski düzen döner.
+   ===================================================================== */
+
+/* Akıcı kaydırma: sabit bulanık ışık katmanları ve sabit arka plan her
+   kaydırmada yeniden boyanıyordu; izleme bölümünde düz zemin kullanılır. */
+html[data-app="watch"] .fx { display: none; }
+html[data-app="watch"] body { background: var(--bg); }
+
+/* Üst menü: vitrinin üstünde şeffaf, kaydırınca koyu zemin */
+:root[data-app="watch"] .top {
+  position: fixed; left: 0; right: 0; top: 0; z-index: 30;
+  padding: 0;
+  background: linear-gradient(180deg, rgba(0, 0, 0, .72), rgba(0, 0, 0, 0));
+  transition: background-color .3s ease, box-shadow .3s ease;
+}
+:root[data-app="watch"] .top.scrolled {
+  background: rgba(12, 8, 9, .94);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, .06), 0 10px 30px -12px rgba(0, 0, 0, .7);
+}
+/* Açık temada da üst çubuk vitrinin üstünde koyu durur: yazı renkleri sabit açık. */
+html[data-app="watch"] .top-inner { --text: #f7f7f7; --dim: #cacaca; --faint: #9a9a9a; --line: rgba(255, 255, 255, .22); --bg-2: rgba(255, 255, 255, .08); color: var(--text); }
+:root[data-theme="light"][data-app="watch"] body:not(:has(main > .hero:first-child)) .top { background: rgba(12, 8, 9, .94); }
+html[data-app="watch"] .top-inner {
+  max-width: var(--max); margin: 0 auto; padding: 14px var(--gutter);
+  justify-content: flex-start; flex-wrap: nowrap; gap: 28px;
+  border: 0; border-radius: 0; background: none;
+  -webkit-backdrop-filter: none; backdrop-filter: none;
+}
+html[data-app="watch"] .logo { display: flex !important; gap: 10px; order: 0; }
+html[data-app="watch"] .hub-link { display: none !important; }
+html[data-app="watch"] .logo::after {
+  content: "LOVELL"; color: var(--text);
+  font: 800 19px/1 var(--display); letter-spacing: .32em;
+}
+html[data-app="watch"] .nav {
+  display: flex !important; flex: 0 1 auto; min-width: 0; overflow-x: auto; scrollbar-width: none; order: 1; gap: 26px; font-size: 15px; font-weight: 600;
+}
+html[data-app="watch"] .nav::-webkit-scrollbar { display: none; }
+html[data-app="watch"] .nav a { padding: 8px 0; color: rgba(255, 255, 255, .72); }
+html[data-app="watch"] .nav a:hover, html[data-app="watch"] .nav a[aria-current] { color: #fff; }
+html[data-app="watch"] .nav a[aria-current]::after { bottom: 0; height: 3px; }
+/* Anime / Film & Dizi / Canlı seçimi: sade, küçük bir anahtar */
+html[data-app="watch"] .tab-bar {
+  display: inline-flex !important; margin-left: auto; order: 2;
+  background: rgba(255, 255, 255, .06); border: 1px solid rgba(255, 255, 255, .08);
+}
+html[data-app="watch"] .tab-bar::before { display: none; }
+html[data-app="watch"] .top-actions { margin-left: 0; order: 3; }
+html[data-app="watch"] .search-open { width: 40px; padding: 0; justify-content: center; background: transparent; border-color: transparent; }
+html[data-app="watch"] .search-open span, html[data-app="watch"] .search-open kbd { display: none; }
+html[data-app="watch"] .icon-btn { background: transparent; border-color: transparent; }
+html[data-app="watch"] .profile-chip { background: transparent; }
+
+/* Yan menü yerine üst menü */
+html[data-app="watch"] .side:not(.open) { display: none !important; }
+@media (min-width: 861px) { html[data-app="watch"] .side { display: none !important; } }
+html[data-app="watch"] main,
+html[data-app="watch"] .foot { margin-left: 0; }
+html[data-app="watch"] main { padding-top: 76px; }
+
+/* Vitrin: tam genişlik, solda tek bilgi bloğu */
+:root[data-app="watch"] main > .hero:first-child {
+  margin: -76px 0 0; border-radius: 0;
+  min-height: min(92vh, 820px);
+  display: flex; align-items: center;
+}
+:root[data-app="watch"] .hero-shade {
+  background:
+    linear-gradient(90deg, rgba(8, 5, 6, .92) 0%, rgba(8, 5, 6, .62) 34%, rgba(8, 5, 6, 0) 66%),
+    linear-gradient(0deg, var(--bg) 0%, rgba(12, 8, 9, 0) 34%);
+  box-shadow: none;
+}
+:root[data-app="watch"] .hero-body { padding: 150px var(--gutter) 210px; }
+:root[data-app="watch"] .hero-eyebrow { font-size: 12px; letter-spacing: .34em; color: rgba(255, 255, 255, .72); }
+:root[data-app="watch"] .hero-title { font-size: clamp(44px, 6.4vw, 96px); max-width: 12ch; text-shadow: 0 6px 30px rgba(0, 0, 0, .45); }
+:root[data-app="watch"] .hero-meta { gap: 0; color: rgba(255, 255, 255, .82); font-size: 15px; }
+:root[data-app="watch"] .hero-meta > span + span::before { content: ""; display: inline-block; width: 1px; height: 14px; margin: 0 14px; vertical-align: -2px; background: rgba(255, 255, 255, .35); }
+:root[data-app="watch"] .hero-meta .score { background: none; border: 0; padding: 0; }
+:root[data-app="watch"] .hero-text { max-width: 46ch; color: rgba(255, 255, 255, .78); font-size: clamp(15px, 1.25vw, 17px); -webkit-line-clamp: 3; }
+:root[data-app="watch"] .hero .actions { gap: 14px; }
+:root[data-app="watch"] .hero .btn { height: 52px; padding: 0 30px; font-size: 16px; border-radius: 999px; }
+:root[data-app="watch"] .hero .btn-play { background: var(--red); color: #fff; box-shadow: 0 10px 30px -10px color-mix(in srgb, var(--red) 80%, transparent); }
+:root[data-app="watch"] .hero .btn-ghost { background: rgba(0, 0, 0, .22); border: 1.5px solid rgba(255, 255, 255, .55); color: #fff; }
+:root[data-app="watch"] .hero .btn-ghost:hover { background: rgba(255, 255, 255, .12); }
+:root[data-app="watch"] .hero .btn-info { width: 52px; padding: 0; }
+:root[data-app="watch"] .hero .btn-info span { display: none; }
+/* Küçük resimler yerine ince ilerleme çizgileri */
+:root[data-app="watch"] .hero-strip { bottom: 150px; gap: 8px; }
+:root[data-app="watch"] .hero-strip .thumb { width: 34px; height: 4px; aspect-ratio: auto; border-radius: 4px; opacity: 1; background: rgba(255, 255, 255, .28); overflow: hidden; }
+:root[data-app="watch"] .hero-strip .thumb img { display: none; }
+:root[data-app="watch"] .hero-strip .thumb.on, :root[data-app="watch"] .hero-strip .thumb:hover { transform: none; background: rgba(255, 255, 255, .4); }
+:root[data-app="watch"] .hero-strip .thumb i { height: 100%; background: #fff; }
+:root[data-app="watch"] .hero-mute { bottom: 140px; }
+/* İlk satır vitrinin altına biner */
+:root[data-app="watch"] main > .hero:first-child + .page-home { position: relative; z-index: 2; margin-top: -120px; }
+
+@media (max-width: 1100px) {
+  html[data-app="watch"] .top-inner { gap: 18px; }
+  html[data-app="watch"] .nav { gap: 18px; font-size: 14px; }
+  html[data-app="watch"] .logo::after { display: none; }
+  html[data-app="watch"] .profile-name { display: none; }
+  html[data-app="watch"] .profile-chip { padding-right: 5px; }
+}
+@media (max-width: 860px) {
+  html[data-app="watch"] .nav, html[data-app="watch"] .tab-bar { display: none !important; }
+  html[data-app="watch"] .top-actions { margin-left: auto; }
+  html[data-app="watch"] .logo::after { display: inline; font-size: 16px; }
+  html[data-app="watch"] main { padding-top: 64px; }
+  :root[data-app="watch"] main > .hero:first-child { margin-top: -64px; min-height: min(78vh, 640px); align-items: flex-end; }
+  :root[data-app="watch"] .hero-shade { background: linear-gradient(0deg, var(--bg) 4%, rgba(8, 5, 6, .55) 48%, rgba(8, 5, 6, .25) 100%); }
+  :root[data-app="watch"] .hero-body { padding: 120px var(--gutter) 130px; }
+  :root[data-app="watch"] .hero-strip { bottom: 96px; left: var(--gutter); right: auto; }
+  :root[data-app="watch"] main > .hero:first-child + .page-home { margin-top: -60px; }
+  :root[data-app="watch"] .hero-meta { gap: 4px 14px; }
+  :root[data-app="watch"] .hero-meta > span + span::before { display: none; }
+}
+
+/* ---------------- Kaydırma animasyonları ----------------
+   Yalnızca opacity ve transform (ekran kartında çalışır, sayfayı yeniden
+   dizmez). Bölümler görünür alana girince bir kez belirir. */
+.reveal { opacity: 0; transform: translate3d(0, 28px, 0); transition: opacity .6s cubic-bezier(.2, .7, .2, 1), transform .6s cubic-bezier(.2, .7, .2, 1); }
+.reveal.in { opacity: 1; transform: none; }
+/* Vitrin kaydırdıkça hafifçe uzaklaşır (tarayıcı destekliyorsa; JS yok). */
+@supports (animation-timeline: scroll()) {
+  :root[data-app="watch"] main > .hero:first-child .hero-bg {
+    animation: hero-drift linear both; animation-timeline: scroll(root); animation-range: 0 90vh;
+  }
+  :root[data-app="watch"] main > .hero:first-child .hero-body {
+    animation: hero-lift linear both; animation-timeline: scroll(root); animation-range: 0 70vh;
+  }
+  @keyframes hero-drift { to { transform: translate3d(0, 14vh, 0) scale(1.06); } }
+  @keyframes hero-lift { to { transform: translate3d(0, -6vh, 0); opacity: 0; } }
+}
+/* Ekran dışındaki uzun satırlar çizilmez: ilk açılış ve kaydırma hafifler. */
+html[data-app="watch"] .page-home > .shelf:nth-child(n+4) { content-visibility: auto; contain-intrinsic-size: auto 360px; }
+@media (prefers-reduced-motion: reduce) {
+  /* Hareket yok, yalnızca yumuşak bir solma. */
+  .reveal { transform: none; transition: opacity .5s ease; }
+  :root[data-app="watch"] main > .hero:first-child .hero-bg,
+  :root[data-app="watch"] main > .hero:first-child .hero-body { animation: none; }
+}
