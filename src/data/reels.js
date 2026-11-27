@@ -1,8 +1,53 @@
-// Tavsiye sayfasındaki Reels akışına eklenecek Instagram reel'leri.
+// Tavsiye sayfasındaki Reels akışına eklenen Instagram reel'leri.
 // Instagram'ın resmi gömme oynatıcısıyla açılır; video bizim sunucumuza kopyalanmaz.
-// Sahibi gömmeyi kapattıysa Instagram "gönderi kullanılamıyor" gösterir.
+// Her reel, açıklamasında adı geçen başlığa (TMDB) bağlıdır: "İzle" o başlığın sayfasını açar.
+// Kaynak hesaplar: @filmkesifleri, @filmslotu, @film_oneri_atolyesi, @izlemelikfilmler
+// (son paylaşımlar, 2026-11-27 tarihinde toplandı). Eşleşmeler TMDB'de ayrıca doğrulandı.
 //
-// Biçim: {url: 'https://www.instagram.com/reel/<kod>/', title: 'Kısa başlık', account: 'hesapadi',
-//         kind: 'movie' | 'tv', id: <TMDB numarası>}   (kind ve id isteğe bağlı: "İzle" düğmesi için)
+// Biçim: {url, account, kind: 'movie' | 'tv', id: <TMDB>, title, year, poster: <TMDB afiş yolu>, genres}
 export const instagramReels = [
+  {url:'https://www.instagram.com/reel/DgLOzEyAGxd/',account:'filmkesifleri',kind:'movie',id:1033148,title:'Geber Aşkım',year:'2025',poster:'/ocpo8v35IwOZ0ag87hK3Zq3vSnC.jpg',genres:['Dram']},
+  {url:'https://www.instagram.com/reel/DgPalggBxsK/',account:'filmslotu',kind:'movie',id:360605,title:'Ablam Görünmez Oldu!',year:'2015',poster:'/seWQvVIzb5xBjHW0Y1h4jvokxZN.jpg',genres:['Fantastik','Macera','Komedi']},
+  {url:'https://www.instagram.com/reel/DXFNJYkMQKd/',account:'film_oneri_atolyesi',kind:'movie',id:294795,title:'Dokuzuncu Hayat',year:'2016',poster:'/jCM4BpOoCAjs6lKHDCm66kE2XR1.jpg',genres:['Gizem','Gerilim']},
+  {url:'https://www.instagram.com/reel/Dc-vXoaDYc3/',account:'izlemelikfilmler',kind:'movie',id:1265609,title:'Katil Makine',year:'2026',poster:'/tn6zYcdEvfoTJeBP0OeNqu3Sl4J.jpg',genres:['Aksiyon','Bilim-Kurgu','Gerilim']},
+  {url:'https://www.instagram.com/reel/DgGFO7LOCWi/',account:'filmkesifleri',kind:'movie',id:522369,title:'Üzgünüz, Size Ulaşamadık',year:'2019',poster:'/rg5hadrPZbgGdxd8b5eQ696T25B.jpg',genres:['Dram']},
+  {url:'https://www.instagram.com/reel/DgNsskABHWh/',account:'filmslotu',kind:'movie',id:26022,title:'Benim Adım Khan',year:'2010',poster:'/cea4vUdP9StcjuPMsPqPboT7521.jpg',genres:['Dram','Romantik']},
+  {url:'https://www.instagram.com/reel/DXRCa8iM2Fi/',account:'film_oneri_atolyesi',kind:'movie',id:193610,title:'Öteki Kadın',year:'2014',poster:'/ixpElJhAnSTAgGEqgzq1lLS4hth.jpg',genres:['Komedi','Romantik']},
+  {url:'https://www.instagram.com/reel/DcqJC_KjaVZ/',account:'izlemelikfilmler',kind:'tv',id:96777,title:'The Silent Sea',year:'2021',poster:'/wIy2Kr232OJo9glqOVeHapKqgLu.jpg',genres:['Dram','Bilim Kurgu & Fantazi','Gizem']},
+  {url:'https://www.instagram.com/reel/DgC5dNLNl7J/',account:'filmkesifleri',kind:'movie',id:254320,title:'The Lobster',year:'2015',poster:'/7Y9ILV1unpW9mLpGcqyGQU72LUy.jpg',genres:['Komedi','Dram','Romantik']},
+  {url:'https://www.instagram.com/reel/DgNRStlhqhm/',account:'filmslotu',kind:'movie',id:119738,title:'Yıldırım Çarpmış',year:'2012',poster:'/lR1ssqRzslQx9WtTOKnfgqbNB1y.jpg',genres:['Komedi','Aile']},
+  {url:'https://www.instagram.com/reel/DGwEISIMaMd/',account:'film_oneri_atolyesi',kind:'movie',id:1232546,title:'Şafağa Kadar',year:'2025',poster:'/qgfLagTvJv4PkmK4sQoOzE53PRJ.jpg',genres:['Korku','Gizem']},
+  {url:'https://www.instagram.com/reel/DbqKQhDpHGc/',account:'izlemelikfilmler',kind:'movie',id:68730,title:'Silence',year:'2016',poster:'/x5T0cQDYws0xRBVG4Q3wpcrcmax.jpg',genres:['Dram','Tarih']},
+  {url:'https://www.instagram.com/reel/DgCVAXgNans/',account:'filmkesifleri',kind:'tv',id:95396,title:'Severance',year:'2022',poster:'/pPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg',genres:['Dram','Gizem','Bilim Kurgu & Fantazi']},
+  {url:'https://www.instagram.com/reel/DgM13wqhQ9w/',account:'filmslotu',kind:'movie',id:1966,title:'Büyük İskender',year:'2004',poster:'/le7yckDIMJiCbZXGm8Hokbp0c8Q.jpg',genres:['Savaş','Tarih','Dram']},
+  {url:'https://www.instagram.com/reel/DgN6ncoRlfR/',account:'film_oneri_atolyesi',kind:'movie',id:696393,title:'Dikkat: Kıyamet!',year:'2026',poster:'/9slRK7tfDgSHgrFVH70dUz91goa.jpg',genres:['Korku','Bilim-Kurgu','Komedi']},
+  {url:'https://www.instagram.com/reel/DgFyltphTSP/',account:'izlemelikfilmler',kind:'movie',id:499932,title:'The Devil All the Time',year:'2020',poster:'/bVL7LGq528h3KzeNI90HOVbV5uW.jpg',genres:['Suç','Dram','Gerilim']},
+  {url:'https://www.instagram.com/reel/Df_1juftxZN/',account:'filmkesifleri',kind:'movie',id:299536,title:'Avengers: Sonsuzluk Savaşı',year:'2018',poster:'/7FQTJyrvhUp9oYDhHgujWRlxUES.jpg',genres:['Macera','Aksiyon','Bilim-Kurgu']},
+  {url:'https://www.instagram.com/reel/DgK5WkeCfNX/',account:'filmslotu',kind:'movie',id:493922,title:'Ayin',year:'2018',poster:'/tMIKsS1nbaJSVRfVqt4JN9A3eEI.jpg',genres:['Korku','Gizem','Gerilim']},
+  {url:'https://www.instagram.com/reel/DgLS1I0x_Yx/',account:'film_oneri_atolyesi',kind:'movie',id:532408,title:'The Boogeyman',year:'2023',poster:'/yhTCzfojRhNwFgTwzDi0HkrlhAk.jpg',genres:['Korku']},
+  {url:'https://www.instagram.com/reel/DgC_CVahoha/',account:'izlemelikfilmler',kind:'movie',id:1543469,title:'Heartland',year:'2026',poster:'/azArOQaVxKa3367XJv2l4ewjsdB.jpg',genres:['Gerilim','Gizem']},
+  {url:'https://www.instagram.com/reel/Df76xxht201/',account:'filmkesifleri',kind:'movie',id:872585,title:'Oppenheimer',year:'2023',poster:'/mmZi0tyPFfbcCqEsJIPxVldCPOL.jpg',genres:['Dram','Tarih','Savaş']},
+  {url:'https://www.instagram.com/reel/DgIjMMOBc4z/',account:'filmslotu',kind:'movie',id:405774,title:'Bird Box',year:'2018',poster:'/rGfGfgL2pEPCfhIvqHXieXFn7gp.jpg',genres:['Korku','Gerilim','Dram']},
+  {url:'https://www.instagram.com/reel/DgGFtYhRi3V/',account:'film_oneri_atolyesi',kind:'movie',id:1425859,title:'Benimle Kal',year:'2027',poster:'/yRKZSwJopvHzfWNFxUrCzLQgcrK.jpg',genres:['Romantik','Gizem','Korku']},
+  {url:'https://www.instagram.com/reel/DgAcFBhhcSN/',account:'izlemelikfilmler',kind:'movie',id:1616687,title:'Asla Teslim Olma',year:'2026',poster:'/9wypfSz5OyWnew6mt5hviGw6WhM.jpg',genres:['Aksiyon','Suç','Gerilim']},
+  {url:'https://www.instagram.com/reel/Df7YjCtNTHc/',account:'filmkesifleri',kind:'movie',id:1184495,title:'JOY - The Birth of IVF',year:'2024',poster:'/inL3nv3hAqlvoBSIWFMYydlwULE.jpg',genres:['Dram']},
+  {url:'https://www.instagram.com/reel/DgIHpLehVkg/',account:'filmslotu',kind:'movie',id:491480,title:'Rüzgarı Dizginleyen Çocuk',year:'2019',poster:'/yOr7RxHw15MMXNxGMXSmngDqHyI.jpg',genres:['Dram','Tarih']},
+  {url:'https://www.instagram.com/reel/Df-VXCIxCij/',account:'film_oneri_atolyesi',kind:'movie',id:630392,title:'Lanetli',year:'2021',poster:'/8WOJNMFjEconufnNDHps3IHq9fG.jpg',genres:['Korku','Dram','Gerilim']},
+  {url:'https://www.instagram.com/reel/Df7s0lhhOHX/',account:'izlemelikfilmler',kind:'movie',id:1279493,title:'Çıkış Yolu',year:'2026',poster:'/zlkeH0s7dDxcnuPcHBqAyXFUxqN.jpg',genres:['Aksiyon','Gerilim']},
+  {url:'https://www.instagram.com/reel/Df7MwGnNpnw/',account:'filmkesifleri',kind:'tv',id:111803,title:'The White Lotus',year:'2021',poster:'/gbSaK9v1CbcYH1ISgbM7XObD2dW.jpg',genres:['Komedi','Dram','Gizem']},
+  {url:'https://www.instagram.com/reel/DgHsMwphGrS/',account:'filmslotu',kind:'movie',id:471498,title:'Oksijen',year:'2021',poster:'/mCAg3CStlGFw0de1U9MgmxKxwV7.jpg',genres:['Bilim-Kurgu','Gerilim','Korku']},
+  {url:'https://www.instagram.com/reel/Df7z9kTx24U/',account:'film_oneri_atolyesi',kind:'movie',id:109091,title:'Danışman',year:'2013',poster:'/lTotI59vLXPq71lQZXL7MCxBKvv.jpg',genres:['Gerilim','Suç','Dram']},
+  {url:'https://www.instagram.com/reel/DfuxhOMvVGx/',account:'izlemelikfilmler',kind:'movie',id:1263337,title:'Vahşinin Kalbi',year:'2026',poster:'/iA37n5BKKNaEKUpqfmvI352fKJn.jpg',genres:['Macera','Gerilim']},
+  {url:'https://www.instagram.com/reel/DgF4FM8iNp5/',account:'filmslotu',kind:'movie',id:49530,title:'Zamana Karşı',year:'2011',poster:'/o7GxBv3bJRGJFmCK0WYGfWikZPw.jpg',genres:['Aksiyon','Gerilim','Bilim-Kurgu']},
+  {url:'https://www.instagram.com/reel/DfsTpN7RmH8/',account:'film_oneri_atolyesi',kind:'movie',id:268896,title:'Pasifik Savaşı: İsyan',year:'2018',poster:'/f6e4G3xJ6vH9ApOCLG3Ll5hAoTX.jpg',genres:['Aksiyon','Fantastik','Bilim-Kurgu']},
+  {url:'https://www.instagram.com/reel/DfcynUwNzgx/',account:'izlemelikfilmler',kind:'tv',id:79410,title:'After Life',year:'2019',poster:'/6eJf4h9XcvqK64vbx27EFlLVURm.jpg',genres:['Komedi','Dram']},
+  {url:'https://www.instagram.com/reel/DgFVpL9x5w9/',account:'filmslotu',kind:'movie',id:555604,title:'Guillermo del Toro sunar: Pinokyo',year:'2022',poster:'/vx1u0uwxdlhV2MUzj4VlcMB0N6m.jpg',genres:['Animasyon','Fantastik','Macera']},
+  {url:'https://www.instagram.com/reel/Dfkdi26xaq0/',account:'film_oneri_atolyesi',kind:'movie',id:449562,title:'Düzenbazlar',year:'2019',poster:'/dcICyurJiGeisx1X7hMTE1cXjuH.jpg',genres:['Komedi','Suç']},
+  {url:'https://www.instagram.com/reel/DfKwxZ6BnzH/',account:'izlemelikfilmler',kind:'movie',id:1124620,title:'Maymun',year:'2025',poster:'/aGDekyIb0yfmnuLZciCozRPk2TE.jpg',genres:['Korku','Komedi']},
+  {url:'https://www.instagram.com/reel/DgDZlOFBZqf/',account:'filmslotu',kind:'movie',id:698948,title:'On Üç Yaşam',year:'2022',poster:'/yi5KcJqFxy0D6yP8nCfcF8gJGg5.jpg',genres:['Dram','Gerilim']},
+  {url:'https://www.instagram.com/reel/DfQDkvLRp2p/',account:'film_oneri_atolyesi',kind:'movie',id:1400940,title:'Clayface',year:'2026',poster:'/1Xkpx33q2wZ9DEfdJbz1l1id00A.jpg',genres:['Korku','Gerilim','Bilim-Kurgu']},
+  {url:'https://www.instagram.com/reel/De9gLFcNr3D/',account:'izlemelikfilmler',kind:'movie',id:625568,title:'Dengesiz',year:'2020',poster:'/dXgyXBORs5hvjmUd3jXFo4QD3b2.jpg',genres:['Aksiyon','Gerilim','Korku']},
+  {url:'https://www.instagram.com/reel/DgDFAHsh83N/',account:'filmslotu',kind:'movie',id:10449,title:'Erkek Severse',year:'1994',poster:'/cA1uMNX3sdWAWfMZbsgm1VIJYSY.jpg',genres:['Dram','Romantik']},
+  {url:'https://www.instagram.com/reel/DfAlOfoxGoH/',account:'film_oneri_atolyesi',kind:'movie',id:1283515,title:'Verity: Gerçeğin Diğer Kıyısı',year:'2026',poster:'/yKLBWj6KXJNgRQtzZ9aCgSxyYEC.jpg',genres:['Gizem','Gerilim']},
+  {url:'https://www.instagram.com/reel/De65ELyBUK-/',account:'izlemelikfilmler',kind:'movie',id:488623,title:'Forgotten',year:'2017',poster:'/pXHLaA2dvIfJ3NbslufKqvS48dt.jpg',genres:['Gerilim','Gizem','Suç']},
 ];

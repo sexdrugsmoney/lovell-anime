@@ -3130,3 +3130,14 @@ dialog.reels::backdrop { background: rgba(0, 0, 0, .9); }
 .reels-nav button { display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; background: rgba(255, 255, 255, .12); color: #fff; }
 .reels-nav svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; }
 @media (max-width: 720px) { .reels-nav { display: none; } .reel-frame { border-radius: 0; } }
+
+/* Tavsiye: kategori seçimi, Instagram reel bilgisi */
+.mood-cats { display: flex; gap: 8px; flex-wrap: wrap; margin: 4px 0 18px; }
+.mood-cats .dz-chip { height: 40px; padding: 0 20px; font-size: 14px; }
+.reel-src { font-size: 12px; font-weight: 800; color: #fff; opacity: .85; margin-bottom: 2px; }
+.reel-ig .reel-badge { background: linear-gradient(135deg, #f58529, #dd2a7b 55%, #8134af); }
+/* Instagram gömmesinin altı beyaz: bilgi üstüne binmesin, altında koyu bir şerit olsun. */
+.reel-ig-slide { place-items: start center; }
+.reel-ig-slide .reel-frame { margin-top: 12px; height: calc(100dvh - 176px); width: min(100vw, calc((100dvh - 176px) * 9 / 16 + 40px)); background: #fff; }
+.reel-ig-slide .reel-info { bottom: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(12, 12, 12, .94); border: 1px solid rgba(255, 255, 255, .08); text-shadow: none; }
+.reel-ig-slide .reel-info .actions { margin-top: 8px; }

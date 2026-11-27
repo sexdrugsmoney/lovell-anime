@@ -4007,79 +4007,105 @@ function openManga(e) {
   if (id) location.hash = `#/readfy/${id}`;
 }
 
+// Tavsiye: önce ne izlemek istediğini seç (Film / Dizi / Anime); ruh halleri ve Reels buna göre süzülür.
+const MOOD_CATS = [['film', 'Film'], ['dizi', 'Dizi'], ['anime', 'Anime']];
+const CAT_QUERY = {film: {kind: 'movie', section: 'media'}, dizi: {kind: 'tv', section: 'media'}, anime: {kind: 'tv', section: 'anime'}};
+// Her ruh hali kategoriye göre farklı bir türe bakar (TMDB'de dizi için korku / romantik türü yok).
 const MOODS = [
-  {id: 'tired', label: 'Çok yorgunum ama uykum yok', hint: 'Hafif, sıcak, kafa dağıtan.', genre: 'gunluk-yasam', sort: 'popular', kind: 'tv', section: 'anime'},
-  {id: 'sharp', label: 'Zihnim açılsın, karmaşık bir şey', hint: 'Gizem ve zeka.', genre: 'gizem', sort: 'rating', kind: 'tv', section: 'anime'},
-  {id: 'rain', label: 'Yağmurlu ve melankolik', hint: 'Yavaş, duygusal.', genre: 'dram', sort: 'rating', kind: 'movie', section: 'anime'},
-  {id: 'fire', label: 'Aksiyon istiyorum, şimdi', hint: 'Hızlı kesitler.', genre: 'aksiyon', sort: 'popular', kind: 'tv', section: 'anime'},
-  {id: 'laugh', label: 'Gülmem lazım', hint: 'Komedi.', genre: 'komedi', sort: 'popular', kind: 'tv', section: 'anime'},
-  {id: 'cozy', label: 'Battaniye + film', hint: 'Sinemalık bir film.', genre: 'fantastik', sort: 'rating', kind: 'movie', section: 'media'},
+  {id: 'tired', label: 'Çok yorgunum ama uykum yok', hint: 'Hafif, sıcak, kafa dağıtan.', sort: 'rating', g: {film: 'animasyon', dizi: 'komedi', anime: 'gunluk-yasam'}},
+  {id: 'sharp', label: 'Zihnim açılsın, karmaşık bir şey', hint: 'Gizem ve zeka.', sort: 'rating', g: {film: 'gizem', dizi: 'gizem', anime: 'psikolojik'}},
+  {id: 'rain', label: 'Yağmurlu ve melankolik', hint: 'Yavaş, duygusal.', sort: 'rating', g: {film: 'dram', dizi: 'dram', anime: 'dram'}},
+  {id: 'fire', label: 'Aksiyon istiyorum, şimdi', hint: 'Hızlı kesitler.', sort: 'popular', g: {film: 'aksiyon', dizi: 'aksiyon', anime: 'aksiyon'}},
+  {id: 'laugh', label: 'Gülmem lazım', hint: 'Komedi.', sort: 'popular', g: {film: 'komedi', dizi: 'komedi', anime: 'komedi'}},
+  {id: 'scare', label: 'Biraz korkmak istiyorum', hint: 'Gerilim ve korku.', sort: 'popular', g: {film: 'korku', dizi: 'gizem', anime: 'korku'}},
+  {id: 'space', label: 'Kafam başka dünyalarda', hint: 'Bilim kurgu ve fantastik.', sort: 'rating', g: {film: 'bilim-kurgu', dizi: 'bilim-kurgu', anime: 'isekai'}},
+  {id: 'cozy', label: 'Battaniye keyfi', hint: 'Sıcacık, herkesle izlenir.', sort: 'rating', g: {film: 'aile', dizi: 'aile', anime: 'fantastik'}},
 ];
-let moodState = {pick: null, spinning: false};
+const savedCat = store.get('moodCat', 'film');
+let moodState = {pick: null, spinning: false, cat: CAT_QUERY[savedCat] ? savedCat : 'film'};
 async function viewTavsiye() {
   document.title = 'TavsiyerVerKnk — LOVELL';
-  const p = moodState.pick;
+  const p = moodState.pick, cat = moodState.cat;
   main.innerHTML = `<div class="mood">
-    <header class="hub-hero"><p class="eyebrow">Ruh hali</p><h1>TavsiyerVerKnk</h1><p>Ne izleyeceğine karar veremiyorsan ruh halini seç. Sana bir başlık çekilir.</p></header>
+    <header class="hub-hero"><p class="eyebrow">Ruh hali</p><h1>TavsiyerVerKnk</h1><p>Ne izlemek istediğini ve ruh halini seç. Sana bir başlık çekilir; aşağıda da kısa videolarla keşfet.</p></header>
+    <div class="mood-cats" role="tablist" aria-label="Ne izlemek istiyorsun">${MOOD_CATS.map(([id, label]) => `<button type="button" role="tab" class="dz-chip${id === cat ? ' on' : ''}" data-cat="${id}" aria-selected="${id === cat}">${label}</button>`).join('')}</div>
     <div class="mood-grid">${MOODS.map(m => `<button type="button" class="mood-card" data-mood="${m.id}"><b>${esc(m.label)}</b><span>${esc(m.hint)}</span></button>`).join('')}</div>
     ${moodState.spinning ? '<div class="mood-reveal is-spin"><span class="spin"></span> Zar atılıyor…</div>' : ''}
-    ${p ? `<a class="mood-reveal" href="#/izle/${p.kind}/${p.id}"><img src="${esc(p.backdrop || p.poster || '')}" alt=""><div><span class="eyebrow">Bugünkü çekiliş</span><h2>${esc(p.title)}</h2><p>${esc((p.overview || '').slice(0, 180))}</p><span class="btn btn-play">İzlemeye geç</span></div></a>` : ''}
+    ${p ? `<a class="mood-reveal" href="${watchHref(p)}"><img src="${esc(p.backdrop || p.poster || '')}" alt=""><div><span class="eyebrow">Bugünkü çekiliş · ${esc(kindLabel(p))}</span><h2>${esc(p.title)}</h2><p>${esc((p.overview || '').slice(0, 180))}</p><span class="btn btn-play">İzlemeye geç</span></div></a>` : ''}
     <section class="reels-row" id="reels" aria-labelledby="reels-h"></section>
   </div>`;
   paintReels();
-  if (!reelState.items) loadReelPool().then(() => { if (document.documentElement.dataset.app === 'tavsiye') paintReels(); });
+  if (!reelState.pools[cat]) loadReelPool(cat).then(() => { if (document.documentElement.dataset.app === 'tavsiye' && moodState.cat === cat) paintReels(); });
   if (/[?&]reels=1/.test(location.hash) && !moodState.pick && !moodState.spinning) requestAnimationFrame(() => $('#reels')?.scrollIntoView({block: 'start', behavior: reduceMotion ? 'auto' : 'smooth'}));
+  $$('[data-cat]').forEach(b => b.onclick = () => {
+    if (b.dataset.cat === moodState.cat || moodState.spinning) return;
+    moodState.cat = b.dataset.cat;
+    moodState.pick = null;
+    store.set('moodCat', moodState.cat);
+    viewTavsiye();
+  });
   $$('[data-mood]').forEach(b => b.onclick = async () => {
     const spec = MOODS.find(m => m.id === b.dataset.mood);
     if (!spec || moodState.spinning) return;
+    const c = moodState.cat, q = CAT_QUERY[c];
     moodState.spinning = true; moodState.pick = null; viewTavsiye();
     try {
-      const d = await api(`/api/browse?${new URLSearchParams({kind: spec.kind, genre: spec.genre, sort: spec.sort, page: '1', section: spec.section})}`);
+      const page = String(1 + Math.floor(Math.random() * 2));
+      const d = await api(`/api/browse?${new URLSearchParams({kind: q.kind, genre: spec.g[c], sort: spec.sort, page, section: q.section})}`);
       const pool = (d.items || []).filter(i => i.backdrop || i.poster);
       moodState.pick = pool[Math.floor(Math.random() * pool.length)] || null;
       if (!moodState.pick) toast('Bu ruh haline uygun başlık bulunamadı', 'error');
     } catch (e) { toast(e.message || 'Çekiliş yapılamadı', 'error'); }
     moodState.spinning = false;
-    viewTavsiye();
+    if (document.documentElement.dataset.app === 'tavsiye') viewTavsiye();
   });
 }
 
-// ---- Reels: dikey fragman akışı (+ data/reels.js içindeki Instagram reel'leri) ----
-let reelState = {items: null, loading: false, error: ''};
+// ---- Reels: Instagram reel'leri (data/reels.js, her biri bir başlığa bağlı) + dikey fragman akışı ----
+let reelState = {pools: {}, loading: {}, error: {}};
 const igCode = url => String(url || '').match(/instagram\.com\/(?:reel|reels|p)\/([A-Za-z0-9_-]{5,40})/)?.[1] || '';
-async function loadReelPool() {
-  if (reelState.items || reelState.loading) return;
-  reelState.loading = true;
+const tmdbPoster = p => p ? `/api/img?p=${encodeURIComponent(`/t/p/w342${p}`)}` : '';
+async function loadReelPool(cat) {
+  if (reelState.pools[cat] || reelState.loading[cat]) return;
+  reelState.loading[cat] = true;
   try {
-    const d = await api('/api/home?section=media');
+    const d = await api(`/api/home?section=${cat === 'anime' ? 'anime' : 'media'}`);
     const seen = new Set(), pool = [];
     for (const s of d.shelves || []) for (const a of s.items || []) {
       if (!a?.poster || seen.has(keyOf(a))) continue;
+      if (cat === 'film' && !isMovie(a)) continue;
+      if (cat === 'dizi' && isMovie(a)) continue;
       seen.add(keyOf(a));
       pool.push(a);
     }
-    reelState.items = shuffled(pool).slice(0, 24);
+    reelState.pools[cat] = shuffled(pool).slice(0, 24);
   } catch (e) {
-    reelState.error = e.message || 'Reels yüklenemedi';
-    reelState.items = [];
+    reelState.error[cat] = e.message || 'Reels yüklenemedi';
+    reelState.pools[cat] = [];
   }
-  reelState.loading = false;
+  reelState.loading[cat] = false;
 }
-const reelSlides = () => [
-  ...instagramReels.filter(r => igCode(r.url)).map(r => ({type: 'ig', code: igCode(r.url), title: r.title || 'Instagram reel', account: r.account || '', a: r.kind && r.id ? {kind: r.kind, id: r.id, title: r.title} : null})),
-  ...(reelState.items || []).map(a => ({type: 'trailer', a, title: a.title})),
+// Instagram reel'leri önce gelir (bağlı olduğu başlık seçili kategorideyse), fragmanlar ardından.
+const reelSlides = (cat = moodState.cat) => [
+  ...instagramReels.filter(r => igCode(r.url) && r.kind && r.id && (cat === 'film' ? r.kind === 'movie' : cat === 'dizi' ? r.kind === 'tv' : r.anime === true)).map(r => ({
+    type: 'ig', code: igCode(r.url), title: r.title || 'Instagram reel', account: r.account || '',
+    a: {kind: r.kind, id: r.id, title: r.title, year: r.year, poster: tmdbPoster(r.poster), genres: r.genres || [], section: r.anime ? 'anime' : 'media'},
+  })),
+  ...(reelState.pools[cat] || []).map(a => ({type: 'trailer', a, title: a.title})),
 ];
 function paintReels() {
   const box = $('#reels');
   if (!box) return;
-  const slides = reelSlides();
+  const cat = moodState.cat;
+  const slides = reelSlides(cat);
+  const pending = reelState.loading[cat] || !reelState.pools[cat];
+  const tile = (s, i) => `<button class="reel-tile${s.type === 'ig' ? ' reel-ig' : ''}" type="button" data-reel="${i}">${s.a.poster ? `<img src="${esc(s.a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}<span class="reel-badge">${s.type === 'ig' ? 'Instagram' : 'Fragman'}</span><span class="reel-tile-body"><b>${esc(s.a.title)}</b><small>${esc(s.type === 'ig' ? `@${s.account}` : [s.a.year, kindLabel(s.a)].filter(Boolean).join(' · '))}</small></span><span class="reel-tile-play">${PLAY}</span></button>`;
   const body = slides.length
-    ? `<div class="reel-tiles">${slides.map((s, i) => s.type === 'ig'
-      ? `<button class="reel-tile reel-ig" type="button" data-reel="${i}"><span class="reel-badge">Instagram</span><span class="reel-tile-body"><b>${esc(s.title)}</b>${s.account ? `<small>@${esc(s.account)}</small>` : ''}</span><span class="reel-tile-play">${PLAY}</span></button>`
-      : `<button class="reel-tile" type="button" data-reel="${i}"><img src="${esc(s.a.poster)}" alt="" loading="lazy" decoding="async" data-fb><span class="reel-badge">Fragman</span><span class="reel-tile-body"><b>${esc(s.a.title)}</b><small>${esc([s.a.year, kindLabel(s.a)].filter(Boolean).join(' · '))}</small></span><span class="reel-tile-play">${PLAY}</span></button>`).join('')}</div>`
-    : reelState.loading || !reelState.items ? `<div class="reel-tiles">${Array.from({length: 6}, () => '<span class="skeleton reel-sk"></span>').join('')}</div>`
-    : `<p class="muted">${esc(reelState.error || 'Şu an gösterilecek reel yok.')}</p>`;
-  box.innerHTML = `<div class="shelf-head"><h2 id="reels-h">Reels</h2><span class="muted reels-sub">Fragmanları dikey kaydır, beğendiğini hemen aç.</span></div>${body}`;
+    ? `<div class="reel-tiles">${slides.map(tile).join('')}${pending ? Array.from({length: 3}, () => '<span class="skeleton reel-sk"></span>').join('') : ''}</div>`
+    : pending ? `<div class="reel-tiles">${Array.from({length: 6}, () => '<span class="skeleton reel-sk"></span>').join('')}</div>`
+    : `<p class="muted">${esc(reelState.error[cat] || 'Şu an gösterilecek reel yok.')}</p>`;
+  const label = {film: 'filmler', dizi: 'diziler', anime: 'animeler'}[cat];
+  box.innerHTML = `<div class="shelf-head"><h2 id="reels-h">Reels</h2><span class="muted reels-sub">Kısa videolarla ${label}: Instagram önerileri ve fragmanlar. Beğendiğini hemen aç.</span></div>${body}`;
   $$('[data-reel]', box).forEach(b => b.onclick = () => openReels(Number(b.dataset.reel)));
   imgFallback(box);
 }
@@ -4099,15 +4125,16 @@ function openReels(start = 0) {
   dlg.innerHTML = `<button class="reels-close" type="button" aria-label="Kapat"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     <div class="reels-feed">${slides.map((s, i) => {
       const a = s.a;
-      const meta = s.type === 'ig' ? (s.account ? `@${s.account} · Instagram` : 'Instagram') : [a.year, kindLabel(a), (a.genres || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ');
-      return `<section class="reel" data-i="${i}">
-        ${s.type === 'trailer' && (a.backdrop || a.poster) ? `<img class="reel-bg" src="${esc(a.backdrop || a.poster)}" alt="" data-fb>` : '<span class="reel-bg"></span>'}
+      const meta = [a.year, kindLabel(a), (a.genres || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ');
+      return `<section class="reel${s.type === 'ig' ? ' reel-ig-slide' : ''}" data-i="${i}">
+        ${a.backdrop || a.poster ? `<img class="reel-bg" src="${esc(a.backdrop || a.poster)}" alt="" data-fb>` : '<span class="reel-bg"></span>'}
         <div class="reel-frame${s.type === 'ig' ? ' is-ig' : ''}" data-frame></div>
         <div class="reel-info">
+          ${s.type === 'ig' ? `<p class="reel-src">@${esc(s.account)} · Instagram önerisi</p>` : ''}
           <h3>${esc(s.title)}</h3>
           <p class="reel-meta">${esc(meta)}</p>
           ${s.type === 'trailer' && a.overview ? `<p class="reel-line">${esc(firstLine(a.overview))}</p>` : ''}
-          ${a ? `<div class="actions"><a class="btn btn-play btn-sm" href="${watchHref(a)}">${PLAY}İzle</a>${s.type === 'trailer' ? `<button class="btn btn-ghost btn-sm" type="button" data-reel-list="${i}">${inList(a) ? CHECK + 'Listende' : PLUS + 'Listem'}</button>` : ''}</div>` : ''}
+          <div class="actions"><a class="btn btn-play btn-sm" href="${watchHref(a)}">${PLAY}${isMovie(a) ? 'Filmi izle' : 'Diziyi izle'}</a><button class="btn btn-ghost btn-sm" type="button" data-reel-list="${i}">${inList(a) ? CHECK + 'Listende' : PLUS + 'Listem'}</button></div>
         </div>
       </section>`;
     }).join('')}</div>
