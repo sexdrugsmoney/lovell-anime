@@ -71,6 +71,11 @@
 - JustPlay (English/Japanese only)
 ```
 
+## 🚫 Erişim Kilidi Nedeniyle Kaldırılan Kaynaklar (2026-11-26)
+```
+- DDizici (Pilavyer oynatıcı) - Oynatıcı yalnızca kendi ortak sitelerinden gelen istekleri kabul ediyor; diğer referer'larda 403 dönüyor. Sağlayıcı ddizici.org referer/origin bilgisini taklit ederek bu kilidi aşıyordu; taklit ve sağlayıcı kodu kaldırıldı.
+```
+
 ## ✅ Tutulan Kaynaklar (Sadece Türkçe Dublaj)
 
 ### Film/TV Türkçe Dublaj Kaynakları (14)
