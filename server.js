@@ -5,7 +5,7 @@ import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {ROOT} from './lib/env.js';
 import {tmdbGet, netStatus} from './lib/net.js';
-import {browse, search, home, detail, episodes, airingWeek, GENRES, genresFor, dataErrors} from './lib/catalog.js';
+import {browse, search, home, detail, trailer, episodes, airingWeek, GENRES, genresFor, dataErrors} from './lib/catalog.js';
 import {sources, library, resolveMedia, srtToVtt, scan, MEDIA_DIR, vidriftUrl, embedSources, remoteSources, trArchiveEmbeds, turkishSubs, dizi78Embeds, hdFilmizleEmbeds, zenkaiiReanimeEmbeds, animecixEmbeds, PROXY_SECRET} from './lib/media.js';
 import {Readable} from 'node:stream';
 import {handleHlsProxy, isHlsProxyPath} from './lib/hls-proxy.js';
@@ -274,6 +274,8 @@ export const server = http.createServer(async (req, res) => {
     if (u.pathname === '/api/search') return json(res, 200, await search(q.get('q'), q.get('section')), 300);
     let m = u.pathname.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
     if (m) return json(res, 200, await detail(m[1], m[2]), 600);
+    m = u.pathname.match(/^\/api\/trailer\/(tv|movie|al)\/(\d{1,9})$/);
+    if (m) return json(res, 200, await trailer(m[1], m[2]), 86400);
     m = u.pathname.match(/^\/api\/episodes\/(tv|movie|al)\/(\d{1,9})$/);
     if (m) return json(res, 200, await episodes(m[1], m[2], int(q.get('season'))), 600);
     m = u.pathname.match(/^\/api\/play\/(tv|movie|al)\/(\d{1,9})$/);

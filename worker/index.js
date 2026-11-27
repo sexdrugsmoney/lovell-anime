@@ -1,7 +1,7 @@
 // LOVELL — Cloudflare Workers sürümü.
 // Statik dosyalar (dist/) Workers Static Assets ile, /api/* uçları bu betikle sunulur.
 // TMDB ve görseller Cloudflare üzerinden çekildiği için ziyaretçinin DNS'i önemli değildir.
-import {configure, browse, search, home, detail, episodes, airingWeek, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
+import {configure, browse, search, home, detail, trailer, episodes, airingWeek, GENRES, genresFor, dataErrors} from '../lib/catalog-core.js';
 import offlineEpisodes from '../src/data/offline-episodes.js';
 import {buildEmbeds, isTurkishSource, isTurkishEmbed, fetchRemoteSources, normalizeSources, fetchTrArchive, fetchTurkishSubs, fetchDubSources, fetchDizi78Embed, fetchHdFilmizleEmbed, fetchZenkaiiReanime, fetchAnimecixEmbed} from '../lib/providers.js';
 import {handleHlsProxy, isHlsProxyPath} from '../lib/hls-proxy.js';
@@ -290,7 +290,9 @@ async function api(url, env) {
   if (path === '/api/week') return json(await airingWeek(), 200, 600);
   if (path === '/api/browse') return json(await browse({kind: q.get('kind'), genre: q.get('genre') || '', sort: q.get('sort') || 'popular', page: int(q.get('page')), q: q.get('q') || '', section: q.get('section')}), 200, 300);
   if (path === '/api/search') return json(await search(q.get('q'), q.get('section')), 200, 300);
-  let m = path.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
+  let m = path.match(/^\/api\/trailer\/(tv|movie|al)\/(\d{1,9})$/);
+  if (m) return json(await trailer(m[1], m[2]), 200, 86400);
+  m = path.match(/^\/api\/title\/(tv|movie|al)\/(\d{1,9})$/);
   if (m) {
     const titleData = await detail(m[1], m[2]);
 

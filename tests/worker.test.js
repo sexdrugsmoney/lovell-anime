@@ -11,6 +11,7 @@ globalThis.fetch = async (input, init = {}) => {
   const j = d => new Response(JSON.stringify(d), {headers: {'content-type': 'application/json'}});
   if (url.hostname === 'api.themoviedb.org') {
     if (url.pathname === '/3/discover/tv' || url.pathname === '/3/discover/movie') return j({page: 1, total_pages: 2, results: [{id: 7, name: 'Bulut Anime', genre_ids: [16], original_language: 'ja', overview: 'Özet', backdrop_path: '/b.jpg', poster_path: '/p.jpg', first_air_date: '2026-01-01', vote_average: 8}]});
+    if (url.pathname === '/3/tv/7/videos') return j({results: [{site: 'YouTube', type: 'Teaser', key: 'teaser1', iso_639_1: 'en'}, {site: 'YouTube', type: 'Trailer', key: 'trailer1', iso_639_1: 'en', official: true}]});
     if (url.pathname === '/3/tv/7') return j({id: 7, name: 'Bulut Anime', genres: [{id: 16}], original_language: 'ja', overview: 'Özet', seasons: [{season_number: 1, episode_count: 1}]});
     return new Response('{"status_message":"yok"}', {status: 404, headers: {'content-type': 'application/json'}});
   }
@@ -138,4 +139,10 @@ test('Worker yorumları anahtarla yazar, listeler ve profil listesine karıştı
   assert.equal([...box.keys()].some(k => k.startsWith('profile:comments')), false);
   const del = await worker.fetch(new Request(`https://lovell.example.workers.dev/api/comments?kind=tv&id=7&cid=${list.items[0].id}`, {method: 'DELETE', headers: {cookie: pass}}), env);
   assert.equal((await del.json()).total, 0);
+});
+
+test('Worker yalnızca fragmanı tek TMDB isteğiyle döndürür', async () => {
+  const d = await (await call('/api/trailer/tv/7')).json();
+  assert.deepEqual(d.trailer, {site: 'youtube', key: 'trailer1'});
+  assert.equal((await worker.fetch(new Request('https://lovell.example.workers.dev/api/trailer/tv/7'), env)).status, 401);
 });

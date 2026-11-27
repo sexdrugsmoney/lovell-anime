@@ -348,6 +348,7 @@ const CACHE_TTL = {
   '/api/browse': 300,
   '/api/search': 120,
   '/api/title/': 600,
+  '/api/trailer/': 3600,
   '/api/episodes/': 600,
 };
 const apiInflight = new Map(); // aynı isteği iki kez atmamak için (ön yükleme + tıklama)
@@ -4010,19 +4011,56 @@ function openManga(e) {
 // Tavsiye: önce ne izlemek istediğini seç (Film / Dizi / Anime); ruh halleri ve Reels buna göre süzülür.
 const MOOD_CATS = [['film', 'Film'], ['dizi', 'Dizi'], ['anime', 'Anime']];
 const CAT_QUERY = {film: {kind: 'movie', section: 'media'}, dizi: {kind: 'tv', section: 'media'}, anime: {kind: 'tv', section: 'anime'}};
-// Her ruh hali kategoriye göre farklı bir türe bakar (TMDB'de dizi için korku / romantik türü yok).
+// Her ruh hali kategoriye göre birkaç türe bakar; her çekilişte biri rastgele seçilir.
+// TMDB'de dizi için gerilim / korku / romantik / tarih türü yok, o yüzden dizide yakın türler kullanılır.
+// g yoksa (Beni şaşırt, Yeni çıkanlar) o kategorinin bütün türlerinden biri seçilir.
 const MOODS = [
-  {id: 'tired', label: 'Çok yorgunum ama uykum yok', hint: 'Hafif, sıcak, kafa dağıtan.', sort: 'rating', g: {film: 'animasyon', dizi: 'komedi', anime: 'gunluk-yasam'}},
-  {id: 'sharp', label: 'Zihnim açılsın, karmaşık bir şey', hint: 'Gizem ve zeka.', sort: 'rating', g: {film: 'gizem', dizi: 'gizem', anime: 'psikolojik'}},
-  {id: 'rain', label: 'Yağmurlu ve melankolik', hint: 'Yavaş, duygusal.', sort: 'rating', g: {film: 'dram', dizi: 'dram', anime: 'dram'}},
-  {id: 'fire', label: 'Aksiyon istiyorum, şimdi', hint: 'Hızlı kesitler.', sort: 'popular', g: {film: 'aksiyon', dizi: 'aksiyon', anime: 'aksiyon'}},
-  {id: 'laugh', label: 'Gülmem lazım', hint: 'Komedi.', sort: 'popular', g: {film: 'komedi', dizi: 'komedi', anime: 'komedi'}},
-  {id: 'scare', label: 'Biraz korkmak istiyorum', hint: 'Gerilim ve korku.', sort: 'popular', g: {film: 'korku', dizi: 'gizem', anime: 'korku'}},
-  {id: 'space', label: 'Kafam başka dünyalarda', hint: 'Bilim kurgu ve fantastik.', sort: 'rating', g: {film: 'bilim-kurgu', dizi: 'bilim-kurgu', anime: 'isekai'}},
-  {id: 'cozy', label: 'Battaniye keyfi', hint: 'Sıcacık, herkesle izlenir.', sort: 'rating', g: {film: 'aile', dizi: 'aile', anime: 'fantastik'}},
+  {id: 'tired', label: 'Çok yorgunum ama uykum yok', hint: 'Hafif, sıcak, kafa dağıtan.', sorts: ['popular', 'rating'], g: {film: ['animasyon', 'komedi', 'aile'], dizi: ['komedi', 'animasyon'], anime: ['gunluk-yasam', 'komedi']}},
+  {id: 'sharp', label: 'Zihnim açılsın, karmaşık bir şey', hint: 'Gizem, zeka, ters köşe.', sorts: ['rating', 'popular'], g: {film: ['gizem', 'bilim-kurgu', 'gerilim'], dizi: ['gizem', 'suc'], anime: ['psikolojik', 'gizem']}},
+  {id: 'rain', label: 'Yağmurlu ve melankolik', hint: 'Yavaş, duygusal.', sorts: ['rating', 'popular'], g: {film: ['dram', 'romantik'], dizi: ['dram'], anime: ['dram', 'gunluk-yasam']}},
+  {id: 'fire', label: 'Aksiyon istiyorum, şimdi', hint: 'Hızlı kesitler, bol patlama.', sorts: ['popular', 'season', 'rating'], g: {film: ['aksiyon', 'macera'], dizi: ['aksiyon'], anime: ['aksiyon', 'shounen']}},
+  {id: 'laugh', label: 'Gülmem lazım', hint: 'Kafa boşaltan komedi.', sorts: ['popular', 'rating', 'season'], g: {film: ['komedi'], dizi: ['komedi'], anime: ['komedi']}},
+  {id: 'scare', label: 'Biraz korkmak istiyorum', hint: 'Gerilim ve korku.', sorts: ['popular', 'rating', 'season'], g: {film: ['korku', 'gerilim'], dizi: ['gizem', 'suc'], anime: ['korku', 'dogaustu']}},
+  {id: 'space', label: 'Kafam başka dünyalarda', hint: 'Bilim kurgu ve fantastik.', sorts: ['rating', 'popular'], g: {film: ['bilim-kurgu', 'fantastik'], dizi: ['bilim-kurgu', 'fantastik'], anime: ['isekai', 'fantastik', 'mecha']}},
+  {id: 'cozy', label: 'Battaniye keyfi', hint: 'Sıcacık, herkesle izlenir.', sorts: ['rating', 'popular'], g: {film: ['aile', 'animasyon'], dizi: ['aile', 'animasyon'], anime: ['gunluk-yasam', 'komedi']}},
+  {id: 'love', label: 'Aşık oldum galiba', hint: 'Romantik ve tatlı.', sorts: ['popular', 'rating'], g: {film: ['romantik'], dizi: ['dram', 'komedi'], anime: ['romantik']}},
+  {id: 'trip', label: 'Bir maceraya atılmak istiyorum', hint: 'Yolculuk, keşif, hazine.', sorts: ['popular', 'rating'], g: {film: ['macera', 'fantastik'], dizi: ['aksiyon', 'fantastik'], anime: ['macera', 'shounen']}},
+  {id: 'crime', label: 'Suç ve sır dolu bir gece', hint: 'Soygun, dedektif, mafya.', sorts: ['rating', 'popular'], g: {film: ['suc', 'gerilim'], dizi: ['suc', 'gizem'], anime: ['gizem', 'psikolojik']}},
+  {id: 'real', label: 'Gerçek hikâyeler', hint: 'Belgesel, tarih, yaşanmış olaylar.', sorts: ['rating', 'popular'], g: {film: ['belgesel', 'tarih'], dizi: ['belgesel'], anime: ['spor', 'muzik']}},
+  {id: 'war', label: 'Tarih ve savaş', hint: 'Destan gibi.', sorts: ['rating', 'popular'], g: {film: ['savas', 'tarih', 'western'], dizi: ['savas', 'western'], anime: ['mecha']}},
+  {id: 'family', label: 'Ailecek izleyelim', hint: 'Her yaşa uygun.', sorts: ['popular', 'rating'], g: {film: ['aile', 'animasyon', 'macera'], dizi: ['aile', 'animasyon'], anime: ['macera', 'komedi']}},
+  {id: 'classic', label: 'Herkesin övdüğü klasikler', hint: 'Puanı en yüksekler.', sorts: ['rating'], g: {film: ['dram', 'suc', 'bilim-kurgu', 'gerilim'], dizi: ['dram', 'suc'], anime: ['seinen', 'psikolojik', 'dram']}},
+  {id: 'fresh', label: 'Yeni çıkanlardan bir şey', hint: 'Son aylarda çıkanlar.', sorts: ['season', 'new']},
+  {id: 'surprise', label: 'Beni şaşırt', hint: 'Tamamen rastgele.', sorts: ['popular', 'rating', 'season']},
 ];
+const CAT_GENRES = {
+  film: ['aksiyon', 'macera', 'komedi', 'dram', 'suc', 'gerilim', 'gizem', 'bilim-kurgu', 'fantastik', 'korku', 'romantik', 'animasyon', 'belgesel', 'aile', 'savas', 'tarih', 'western'],
+  dizi: ['aksiyon', 'komedi', 'dram', 'suc', 'gizem', 'bilim-kurgu', 'animasyon', 'belgesel', 'aile', 'savas', 'western'],
+  anime: ['aksiyon', 'macera', 'komedi', 'dram', 'fantastik', 'bilim-kurgu', 'gizem', 'romantik', 'korku', 'spor', 'gunluk-yasam', 'dogaustu', 'mecha', 'psikolojik', 'muzik', 'gerilim', 'isekai', 'shounen', 'seinen'],
+};
+const pickOne = list => list[Math.floor(Math.random() * list.length)];
 const savedCat = store.get('moodCat', 'film');
-let moodState = {pick: null, spinning: false, cat: CAT_QUERY[savedCat] ? savedCat : 'film'};
+let moodState = {pick: null, more: [], spec: null, spinning: false, cat: CAT_QUERY[savedCat] ? savedCat : 'film', seen: []};
+
+// Bir çekiliş: rastgele tür + sıralama + iki farklı sayfa; son gösterilenler tekrar gelmez.
+async function drawMood(spec, cat) {
+  const q = CAT_QUERY[cat];
+  const genre = pickOne(spec.g ? spec.g[cat] : CAT_GENRES[cat]);
+  const sort = pickOne(spec.sorts);
+  const maxPage = sort === 'rating' ? 4 : sort === 'season' || sort === 'new' ? 3 : 6;
+  const pages = [...new Set([1 + Math.floor(Math.random() * maxPage), 1 + Math.floor(Math.random() * maxPage)])];
+  const lists = await Promise.all(pages.map(page => api(`/api/browse?${new URLSearchParams({kind: q.kind, genre: spec.id === 'fresh' ? '' : genre, sort, page: String(page), section: q.section})}`).catch(() => ({items: []}))));
+  const seen = new Set(moodState.seen);
+  const all = [], have = new Set();
+  for (const a of lists.flatMap(d => d.items || [])) {
+    if (!(a.backdrop || a.poster) || have.has(keyOf(a))) continue;
+    have.add(keyOf(a));
+    all.push(a);
+  }
+  const fresh = all.filter(a => !seen.has(keyOf(a)));
+  const pool = shuffled(fresh.length >= 4 ? fresh : all);
+  return {pick: pool[0] || null, more: pool.slice(1, 13)};
+}
 async function viewTavsiye() {
   document.title = 'TavsiyerVerKnk — LOVELL';
   const p = moodState.pick, cat = moodState.cat;
@@ -4031,9 +4069,13 @@ async function viewTavsiye() {
     <div class="mood-cats" role="tablist" aria-label="Ne izlemek istiyorsun">${MOOD_CATS.map(([id, label]) => `<button type="button" role="tab" class="dz-chip${id === cat ? ' on' : ''}" data-cat="${id}" aria-selected="${id === cat}">${label}</button>`).join('')}</div>
     <div class="mood-grid">${MOODS.map(m => `<button type="button" class="mood-card" data-mood="${m.id}"><b>${esc(m.label)}</b><span>${esc(m.hint)}</span></button>`).join('')}</div>
     ${moodState.spinning ? '<div class="mood-reveal is-spin"><span class="spin"></span> Zar atılıyor…</div>' : ''}
-    ${p ? `<a class="mood-reveal" href="${watchHref(p)}"><img src="${esc(p.backdrop || p.poster || '')}" alt=""><div><span class="eyebrow">Bugünkü çekiliş · ${esc(kindLabel(p))}</span><h2>${esc(p.title)}</h2><p>${esc((p.overview || '').slice(0, 180))}</p><span class="btn btn-play">İzlemeye geç</span></div></a>` : ''}
+    ${p ? `<a class="mood-reveal" href="${watchHref(p)}"><img src="${esc(p.backdrop || p.poster || '')}" alt=""><div><span class="eyebrow">Bugünkü çekiliş · ${esc(kindLabel(p))}${moodState.spec ? ` · ${esc(moodState.spec.label)}` : ''}</span><h2>${esc(p.title)}</h2><p>${esc((p.overview || '').slice(0, 180))}</p><span class="btn btn-play">İzlemeye geç</span></div></a>
+      <div class="mood-more-head"><h2>Bunlar da olabilir</h2><button class="btn btn-ghost btn-sm" type="button" id="mood-again">${SHUFFLE}Bir daha çek</button></div>
+      ${moodState.more.length ? `<div class="dz-grid mood-more">${moodState.more.map(card).join('')}</div>` : ''}` : ''}
     <section class="reels-row" id="reels" aria-labelledby="reels-h"></section>
   </div>`;
+  imgFallback(main);
+  if (reelState.visit !== routeId) { reelState.visit = routeId; reelState.order = {}; }
   paintReels();
   if (!reelState.pools[cat]) loadReelPool(cat).then(() => { if (document.documentElement.dataset.app === 'tavsiye' && moodState.cat === cat) paintReels(); });
   if (/[?&]reels=1/.test(location.hash) && !moodState.pick && !moodState.spinning) requestAnimationFrame(() => $('#reels')?.scrollIntoView({block: 'start', behavior: reduceMotion ? 'auto' : 'smooth'}));
@@ -4044,25 +4086,32 @@ async function viewTavsiye() {
     store.set('moodCat', moodState.cat);
     viewTavsiye();
   });
-  $$('[data-mood]').forEach(b => b.onclick = async () => {
-    const spec = MOODS.find(m => m.id === b.dataset.mood);
+  const spin = async spec => {
     if (!spec || moodState.spinning) return;
-    const c = moodState.cat, q = CAT_QUERY[c];
-    moodState.spinning = true; moodState.pick = null; viewTavsiye();
+    const c = moodState.cat;
+    moodState.spinning = true; moodState.pick = null; moodState.more = []; moodState.spec = spec;
+    viewTavsiye();
     try {
-      const page = String(1 + Math.floor(Math.random() * 2));
-      const d = await api(`/api/browse?${new URLSearchParams({kind: q.kind, genre: spec.g[c], sort: spec.sort, page, section: q.section})}`);
-      const pool = (d.items || []).filter(i => i.backdrop || i.poster);
-      moodState.pick = pool[Math.floor(Math.random() * pool.length)] || null;
-      if (!moodState.pick) toast('Bu ruh haline uygun başlık bulunamadı', 'error');
+      let out = await drawMood(spec, c);
+      if (!out.pick) out = await drawMood(spec, c);   // seçilen tür / sayfa boş çıktıysa bir kez daha dene
+      moodState.pick = out.pick;
+      moodState.more = out.more;
+      moodState.seen = [...[out.pick, ...out.more].filter(Boolean).map(keyOf), ...moodState.seen].slice(0, 150);
+      if (!out.pick) toast('Bu ruh haline uygun başlık bulunamadı', 'error');
     } catch (e) { toast(e.message || 'Çekiliş yapılamadı', 'error'); }
     moodState.spinning = false;
-    if (document.documentElement.dataset.app === 'tavsiye') viewTavsiye();
-  });
+    if (document.documentElement.dataset.app === 'tavsiye') {
+      viewTavsiye();
+      $('.mood-reveal')?.scrollIntoView({block: 'nearest', behavior: reduceMotion ? 'auto' : 'smooth'});
+    }
+  };
+  $$('[data-mood]').forEach(b => b.onclick = () => spin(MOODS.find(m => m.id === b.dataset.mood)));
+  $('#mood-again')?.addEventListener('click', () => spin(moodState.spec));
 }
 
 // ---- Reels: Instagram reel'leri (data/reels.js, her biri bir başlığa bağlı) + dikey fragman akışı ----
-let reelState = {pools: {}, loading: {}, error: {}};
+// order: bu ziyarette karıştırılmış sıra (sayfaya her girişte yeniden karışır, sayfa içindeyken sabit kalır).
+let reelState = {pools: {}, loading: {}, error: {}, order: {}, visit: 0};
 const igCode = url => String(url || '').match(/instagram\.com\/(?:reel|reels|p)\/([A-Za-z0-9_-]{5,40})/)?.[1] || '';
 const tmdbPoster = p => p ? `/api/img?p=${encodeURIComponent(`/t/p/w342${p}`)}` : '';
 async function loadReelPool(cat) {
@@ -4078,21 +4127,31 @@ async function loadReelPool(cat) {
       seen.add(keyOf(a));
       pool.push(a);
     }
-    reelState.pools[cat] = shuffled(pool).slice(0, 24);
+    reelState.pools[cat] = pool;
   } catch (e) {
     reelState.error[cat] = e.message || 'Reels yüklenemedi';
     reelState.pools[cat] = [];
   }
   reelState.loading[cat] = false;
 }
-// Instagram reel'leri önce gelir (bağlı olduğu başlık seçili kategorideyse), fragmanlar ardından.
-const reelSlides = (cat = moodState.cat) => [
-  ...instagramReels.filter(r => igCode(r.url) && r.kind && r.id && (cat === 'film' ? r.kind === 'movie' : cat === 'dizi' ? r.kind === 'tv' : r.anime === true)).map(r => ({
-    type: 'ig', code: igCode(r.url), title: r.title || 'Instagram reel', account: r.account || '',
-    a: {kind: r.kind, id: r.id, title: r.title, year: r.year, poster: tmdbPoster(r.poster), genres: r.genres || [], section: r.anime ? 'anime' : 'media'},
-  })),
-  ...(reelState.pools[cat] || []).map(a => ({type: 'trailer', a, title: a.title})),
-];
+// Seçili kategorideki Instagram reel'leri ve fragmanlar karışık sırada: iki reel, bir fragman.
+function reelSlides(cat = moodState.cat) {
+  const o = reelState.order[cat] || (reelState.order[cat] = {});
+  if (!o.ig) {
+    o.ig = shuffled(instagramReels.filter(r => igCode(r.url) && r.kind && r.id && (cat === 'film' ? r.kind === 'movie' : cat === 'dizi' ? r.kind === 'tv' : r.anime === true))).map(r => ({
+      type: 'ig', code: igCode(r.url), title: r.title || 'Instagram reel', account: r.account || '',
+      a: {kind: r.kind, id: r.id, title: r.title, year: r.year, poster: tmdbPoster(r.poster), genres: r.genres || [], section: r.anime ? 'anime' : 'media'},
+    }));
+  }
+  const pool = reelState.pools[cat];
+  if (pool && !o.tr) o.tr = shuffled(pool).slice(0, 24).map(a => ({type: 'trailer', a, title: a.title}));
+  const ig = o.ig, tr = o.tr || [], out = [];
+  for (let i = 0, j = 0; i < ig.length || j < tr.length;) {
+    for (let k = 0; k < 2 && i < ig.length; k++) out.push(ig[i++]);
+    if (j < tr.length) out.push(tr[j++]);
+  }
+  return out;
+}
 function paintReels() {
   const box = $('#reels');
   if (!box) return;
@@ -4106,8 +4165,28 @@ function paintReels() {
     : `<p class="muted">${esc(reelState.error[cat] || 'Şu an gösterilecek reel yok.')}</p>`;
   const label = {film: 'filmler', dizi: 'diziler', anime: 'animeler'}[cat];
   box.innerHTML = `<div class="shelf-head"><h2 id="reels-h">Reels</h2><span class="muted reels-sub">Kısa videolarla ${label}: Instagram önerileri ve fragmanlar. Beğendiğini hemen aç.</span></div>${body}`;
-  $$('[data-reel]', box).forEach(b => b.onclick = () => openReels(Number(b.dataset.reel)));
+  $$('[data-reel]', box).forEach(b => {
+    b.onclick = () => openReels(Number(b.dataset.reel));
+    // Fareyle üstüne gelince / dokunur dokunmaz fragman bilgisini önceden al: tıklayınca beklemesin.
+    const warm = () => { const s = reelSlides(cat)[Number(b.dataset.reel)]; if (s?.type === 'trailer') api(`/api/trailer/${s.a.kind}/${s.a.id}`, 15000, {quiet: true}).catch(() => {}); };
+    b.addEventListener('pointerenter', warm, {once: true});
+    b.addEventListener('pointerdown', warm, {once: true});
+    b.addEventListener('focus', warm, {once: true});
+  });
+  warmReelHosts();
   imgFallback(box);
+}
+// Instagram ve YouTube bağlantılarını önceden aç: ilk reel daha hızlı başlar.
+let reelHostsWarm = false;
+function warmReelHosts() {
+  if (reelHostsWarm) return;
+  reelHostsWarm = true;
+  for (const href of ['https://www.instagram.com', 'https://static.cdninstagram.com', 'https://scontent.cdninstagram.com', 'https://www.youtube-nocookie.com', 'https://i.ytimg.com', 'https://www.youtube.com']) {
+    const l = document.createElement('link');
+    l.rel = 'preconnect';
+    l.href = href;
+    document.head.append(l);
+  }
 }
 let reelSession = null;
 function openReels(start = 0) {
@@ -4127,7 +4206,7 @@ function openReels(start = 0) {
       const a = s.a;
       const meta = [a.year, kindLabel(a), (a.genres || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ');
       return `<section class="reel${s.type === 'ig' ? ' reel-ig-slide' : ''}" data-i="${i}">
-        ${a.backdrop || a.poster ? `<img class="reel-bg" src="${esc(a.backdrop || a.poster)}" alt="" data-fb>` : '<span class="reel-bg"></span>'}
+        ${a.backdrop || a.poster ? `<img class="reel-bg" data-src="${esc(a.backdrop || a.poster)}" alt="" decoding="async">` : '<span class="reel-bg"></span>'}
         <div class="reel-frame${s.type === 'ig' ? ' is-ig' : ''}" data-frame></div>
         <div class="reel-info">
           ${s.type === 'ig' ? `<p class="reel-src">@${esc(s.account)} · Instagram önerisi</p>` : ''}
@@ -4150,7 +4229,7 @@ function openReels(start = 0) {
     }
     frame.innerHTML = loading('Fragman aranıyor');
     let d = null;
-    try { d = await api(`/api/title/${s.a.kind}/${s.a.id}`, 15000, {quiet: true}); } catch {}
+    try { d = await api(`/api/trailer/${s.a.kind}/${s.a.id}`, 15000, {quiet: true}); } catch {}
     if (active !== i || !dlg.open) return;
     const key = d?.trailer?.site === 'youtube' ? d.trailer.key : '';
     frame.innerHTML = key
@@ -4158,14 +4237,19 @@ function openReels(start = 0) {
       : '<p class="reel-none">Bu başlığın fragmanı yok. Kaydırmaya devam et.</p>';
     // Sonraki fragmanın bilgisini önceden al (önbelleğe düşer).
     const next = slides[i + 1];
-    if (next?.type === 'trailer') api(`/api/title/${next.a.kind}/${next.a.id}`, 15000, {quiet: true}).catch(() => {});
+    if (next?.type === 'trailer') api(`/api/trailer/${next.a.kind}/${next.a.id}`, 15000, {quiet: true}).catch(() => {});
   };
+  // Arka plan görseli yalnızca görünen ve sıradaki reel için yüklenir (açılış hızlı olsun diye).
+  const showBg = k => { const img = els[k] && $('img.reel-bg', els[k]); if (img && !img.src && img.dataset.src) img.src = img.dataset.src; };
   const activate = i => {
     if (i === active || i < 0 || i >= els.length) return;
     active = i;
-    // Aynı anda yalnızca görünen reel oynar; diğerlerinin oynatıcısı kaldırılır.
-    els.forEach((el, k) => { el.classList.toggle('on', k === i); if (k !== i) $('[data-frame]', el).innerHTML = ''; });
-    mount(i);
+    const next = slides[i + 1]?.type === 'ig' ? i + 1 : -1;
+    // Aynı anda yalnızca görünen reel oynar; sıradaki Instagram reel'i önceden yüklenir (Instagram kendiliğinden oynatmaz).
+    els.forEach((el, k) => { el.classList.toggle('on', k === i); if (k !== i && k !== next) $('[data-frame]', el).innerHTML = ''; });
+    showBg(i); showBg(i + 1);
+    if (!$('iframe', $('[data-frame]', els[i]))) mount(i);
+    if (next > 0 && !$('[data-frame]', els[next]).innerHTML) mount(next);
   };
   // Görünen reel hem IntersectionObserver ile hem de kaydırma bitince konumdan bulunur.
   const io = new IntersectionObserver(entries => entries.forEach(e => { if (e.isIntersecting) activate(Number(e.target.dataset.i)); }), {root: feed, threshold: 0.6});

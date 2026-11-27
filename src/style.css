@@ -3141,3 +3141,9 @@ dialog.reels::backdrop { background: rgba(0, 0, 0, .9); }
 .reel-ig-slide .reel-frame { margin-top: 12px; height: calc(100dvh - 176px); width: min(100vw, calc((100dvh - 176px) * 9 / 16 + 40px)); background: #fff; }
 .reel-ig-slide .reel-info { bottom: 12px; padding: 12px 14px; border-radius: 14px; background: rgba(12, 12, 12, .94); border: 1px solid rgba(255, 255, 255, .08); text-shadow: none; }
 .reel-ig-slide .reel-info .actions { margin-top: 8px; }
+
+/* Tavsiye: çekilişin altında ek öneriler */
+.mood-more-head { display: flex; align-items: center; gap: 12px; margin: 26px 0 14px; }
+.mood-more-head h2 { font-size: clamp(18px, 1.4vw, 22px); }
+.mood-more-head .btn { margin-left: auto; }
+.mood-more { margin-bottom: 8px; }
