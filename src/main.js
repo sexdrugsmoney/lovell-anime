@@ -1,4 +1,5 @@
 import {externalWatchSites} from './data/external-watch-sites.js';
+import {instagramReels} from './data/reels.js';
 // LOVELL istemci uygulaması
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
@@ -614,29 +615,200 @@ async function viewHome(v) {
   const recents = Object.values(recent).filter(r => secOf(r.item) === section).sort((a, b) => b.at - a.at).slice(0, 10);
   const listed = myList.filter(a => secOf(a) === section).slice(0, 18);
 
+  // Dizilla düzeni: öne çıkanlar, yeni eklenenler + en çok izlenenler yan yana, türe göre keşif.
+  const byId = id => shelves.find(s => s.id === id)?.items || [];
+  const media = section === 'media';
+  const top = byId('top10');
+  const fresh = media ? [...byId('tv-new'), ...byId('movie-new')] : byId('season');
+  const used = new Set(['top10', ...(media ? ['tv-new', 'movie-new'] : ['season'])]);
+  const rest = shelves.filter(s => !used.has(s.id));
+  const featured = featuredRow(media
+    ? [{tag: 'Trendde', items: top}, {tag: 'Yeni dizi', items: byId('tv-new')}, {tag: 'Vizyonda yeni', items: byId('movie-new')}]
+    : [{tag: 'Bu sezon', items: byId('season')}, {tag: 'Trendde', items: top}], hero);
+
   main.innerHTML = `${heroView(hero)}
     <div class="page page-home tab-content-enter">
       ${shelf({title: section === 'anime' ? 'Kaldığın bölümden devam et' : 'İzlemeye devam et', items: recents, wide: true})}
-      ${shelves.slice(0, 2).map(shelf).join('')}
+      ${featured}
+      ${freshAndTop(fresh, top)}
       ${forYouShelf(shelves, recents, listed)}
-      ${shelf({title: 'Listem', items: listed, more: '#/listem', layout: section === 'media' ? 'land' : 'poster'})}
-      ${shelves.slice(2, 5).map(shelf).join('')}
-      ${genreLinks()}
-      ${shelves.slice(5).map(shelf).join('')}
+      ${rest.slice(0, 2).map(shelf).join('')}
+      ${shelf({title: 'Listem', items: listed, more: '#/listem', layout: media ? 'land' : 'poster'})}
+      ${discoverBlock()}
+      ${reelsTeaser()}
+      ${rest.slice(2).map(shelf).join('')}
     </div>`;
   bindHero(hero);
   bindShelves();
+  bindFresh(fresh, v);
+  bindDiscover(v);
   imgFallback();
   observeCards();
   setStatus(data.source);
 }
+
+// ---------------- Dizilla tarzı ana sayfa blokları ----------------
+const firstLine = t => {
+  const s = String(t || '').split(/(?<=[.!?…])\s/)[0] || '';
+  return s.length > 90 ? s.slice(0, 88).replace(/\s+\S*$/, '') + '…' : s;
+};
+const shuffled = list => { const a = [...list]; for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+const arrows = '<button class="arrow" data-dir="-1" aria-label="Geri kaydır"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button><button class="arrow" data-dir="1" aria-label="İleri kaydır"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5"/></svg></button>';
+
+// Gruplardan sırayla (her birinden en fazla 3) görseli olan başlıklar; vitrinde zaten olanlar atlanır.
+function featuredRow(groups, hero = []) {
+  const seen = new Set(hero.map(keyOf));
+  const picks = groups.map(g => {
+    const out = [];
+    for (const a of g.items || []) {
+      if (out.length >= 3) break;
+      if (!a?.backdrop || seen.has(keyOf(a))) continue;
+      seen.add(keyOf(a));
+      out.push({a, tag: g.tag});
+    }
+    return out;
+  });
+  const list = [];
+  for (let i = 0; i < 3; i++) picks.forEach(p => p[i] && list.push(p[i]));
+  if (list.length < 3) return '';
+  return `<section class="shelf shelf-ft" aria-labelledby="ft-h">
+    <div class="shelf-head"><h2 id="ft-h">Öne çıkanlar</h2><div class="shelf-tools">${arrows}</div></div>
+    <div class="row row-ft">${list.map(({a, tag}) => {
+      remember(a);
+      const r = recent[keyOf(a)];
+      const cta = isMovie(a) ? 'Filmi izle' : r ? `${r.s}. Sezon ${r.e}. Bölüm` : '1. Sezon 1. Bölüm';
+      const genre = (a.genres || [])[0];
+      return `<article class="ft">
+        <p class="ft-tag">${esc([tag, genre].filter(Boolean).join(' · '))}</p>
+        <p class="ft-line">${esc(firstLine(a.overview) || a.title)}</p>
+        <a class="ft-card" href="${watchHref(a, r?.s, r?.e)}">
+          <img src="${esc(a.backdrop)}" alt="" loading="lazy" decoding="async" data-fb>
+          ${a.score ? `<span class="ft-score">${score(a.score)}</span>` : ''}
+          <span class="ft-shade"></span>
+          <span class="ft-body"><b>${esc(a.title)}</b><small>${esc([a.year, kindLabel(a), genre].filter(Boolean).join(' · '))}</small></span>
+          <span class="ft-cta">${PLAY}${esc(cta)}</span>
+        </a>
+      </article>`;
+    }).join('')}</div>
+  </section>`;
+}
+
+const FRESH_PAGE = 12;
+function freshAndTop(fresh, top) {
+  const media = section === 'media';
+  const items = fresh.filter((a, i, all) => all.findIndex(b => keyOf(b) === keyOf(a)) === i);
+  if (!items.length && !top.length) return '';
+  const counts = new Map();
+  items.forEach(a => (a.genres || []).forEach(g => counts.set(g, (counts.get(g) || 0) + 1)));
+  const topGenres = [...counts.entries()].filter(([, n]) => n >= 2).sort((x, y) => y[1] - x[1]).slice(0, 3).map(([g]) => g);
+  const year = new Date().getFullYear();
+  const chip = (attr, text, on) => `<button class="dz-chip${on ? ' on' : ''}" type="button" ${attr} aria-pressed="${!!on}">${esc(text)}</button>`;
+  return `<div class="dz-split">
+    ${items.length ? `<section class="dz-panel" id="dz-fresh" aria-labelledby="dz-fresh-h">
+      <div class="dz-head"><h2 id="dz-fresh-h">Yeni eklenenler</h2>
+        <div class="dz-pager"><span class="dz-page" id="dz-page"></span><button class="arrow" type="button" data-page="-1" aria-label="Önceki sayfa"><svg viewBox="0 0 16 16"><path d="M10 3 5 8l5 5"/></svg></button><button class="arrow" type="button" data-page="1" aria-label="Sonraki sayfa"><svg viewBox="0 0 16 16"><path d="m6 3 5 5-5 5"/></svg></button></div>
+      </div>
+      <div class="dz-chips" role="group" aria-label="Yeni eklenenleri süz">
+        ${chip('data-f="all"', 'Hepsi', true)}
+        ${media ? chip('data-f="tv"', 'Diziler') + chip('data-f="movie"', 'Filmler') : ''}
+        ${chip('data-f="top"', 'Puan 7.5+')}
+        ${topGenres.map(g => chip(`data-g="${esc(g)}"`, g)).join('')}
+        <label class="dz-switch"><input type="checkbox" id="dz-year"><span>Yalnız ${year}</span></label>
+      </div>
+      <div class="dz-grid" id="dz-grid"></div>
+    </section>` : ''}
+    ${top.length ? `<section class="dz-panel dz-top" aria-labelledby="dz-top-h">
+      <div class="dz-head"><h2 id="dz-top-h">En çok izlenenler</h2><span class="dz-sub">${media ? 'Bu hafta' : 'Şu an'}</span></div>
+      <ol class="dz-rank">${top.slice(0, 10).map((a, i) => { remember(a); return `<li><a href="${watchHref(a)}">
+        <span class="dz-n">${i + 1}</span>
+        <span class="dz-thumb">${a.poster ? `<img src="${esc(a.poster)}" alt="" loading="lazy" decoding="async" data-fb>` : ''}</span>
+        <span class="dz-name"><b>${esc(a.title)}</b><small>${esc([a.year, kindLabel(a)].filter(Boolean).join(' · '))}${a.score ? ` · ★ ${score(a.score)}` : ''}</small></span>
+      </a></li>`; }).join('')}</ol>
+    </section>` : ''}
+  </div>`;
+}
+function bindFresh(fresh, v) {
+  const panel = $('#dz-fresh');
+  if (!panel) return;
+  const items = fresh.filter((a, i, all) => all.findIndex(b => keyOf(b) === keyOf(a)) === i);
+  const year = String(new Date().getFullYear());
+  const st = {f: 'all', g: '', year: false, page: 0};
+  const pass = a => (st.f === 'all' || (st.f === 'top' ? Number(a.score) >= 7.5 : (st.f === 'movie') === isMovie(a)))
+    && (!st.g || (a.genres || []).includes(st.g))
+    && (!st.year || String(a.year || '').startsWith(year));
+  const paint = () => {
+    if (v !== routeId) return;
+    const list = items.filter(pass);
+    const pages = Math.max(1, Math.ceil(list.length / FRESH_PAGE));
+    st.page = Math.min(st.page, pages - 1);
+    const slice = list.slice(st.page * FRESH_PAGE, (st.page + 1) * FRESH_PAGE);
+    $('#dz-grid', panel).innerHTML = slice.length ? slice.map(card).join('') : '<p class="muted dz-empty">Bu süzgeçte başlık yok.</p>';
+    $('#dz-page', panel).textContent = `${st.page + 1} / ${pages}`;
+    const [prev, next] = $$('[data-page]', panel);
+    prev.disabled = st.page === 0;
+    next.disabled = st.page >= pages - 1;
+    imgFallback(panel);
+  };
+  $$('.dz-chip', panel).forEach(b => b.onclick = () => {
+    if (b.dataset.g) { st.g = st.g === b.dataset.g ? '' : b.dataset.g; st.f = 'all'; }
+    else { st.f = b.dataset.f; st.g = ''; }
+    $$('.dz-chip', panel).forEach(c => { const on = c.dataset.g ? c.dataset.g === st.g : !st.g && c.dataset.f === st.f; c.classList.toggle('on', on); c.setAttribute('aria-pressed', String(on)); });
+    st.page = 0;
+    paint();
+  });
+  $('#dz-year', panel).onchange = e => { st.year = e.target.checked; st.page = 0; paint(); };
+  $$('[data-page]', panel).forEach(b => b.onclick = () => { st.page += Number(b.dataset.page); paint(); });
+  paint();
+}
+
 let genres = [];
-// Tür kutucukları: her türün kendi renk tonu var (bölüm temasıyla karışır).
+// Tür düğmeleri: her türün kendi renk tonu var (bölüm temasıyla karışır).
 const GENRE_HUE = {aksiyon: 4, macera: 28, komedi: 48, dram: 330, fantastik: 270, 'bilim-kurgu': 200, gizem: 250, romantik: 340, korku: 0, spor: 140, 'gunluk-yasam': 95, dogaustu: 290, suc: 15, gerilim: 355, animasyon: 175, belgesel: 120, aile: 60, savas: 30, tarih: 38, western: 24, mecha: 210, psikolojik: 265, muzik: 300, isekai: 160, shounen: 12, seinen: 220};
-function genreLinks() {
+function discoverBlock() {
   if (!genres.length) return '';
-  const target = g => section === 'media' && !g.tv ? '#/filmler' : '#/kesfet';
-  return `<section class="genres"><div class="shelf-head"><h2>${section === 'anime' ? 'Türlere göz at' : 'Kategoriler'}</h2></div><div class="genre-grid">${genres.map((g, i) => `<a href="${target(g)}?tur=${g.slug}" style="--h:${GENRE_HUE[g.slug] ?? i * 37}"><span>${esc(g.name)}</span></a>`).join('')}</div></section>`;
+  return `<section class="dz-discover" id="dz-disc" aria-labelledby="dz-disc-h">
+    <div class="dz-head"><h2 id="dz-disc-h">Türe göre keşfet</h2><button class="btn btn-ghost btn-sm" type="button" id="dz-reroll"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M13 3v3.5H9.5M3 13V9.5h3.5M12.4 6.5A4.8 4.8 0 0 0 4 5M3.6 9.5A4.8 4.8 0 0 0 12 11"/></svg>Yeni öneriler</button></div>
+    <div class="dz-chips" role="group" aria-label="Türler">${genres.map((g, i) => `<button class="dz-chip dz-genre" type="button" data-genre="${esc(g.slug)}" aria-pressed="false" style="--h:${GENRE_HUE[g.slug] ?? i * 37}">${esc(g.name)}</button>`).join('')}</div>
+    <div class="dz-picks" id="dz-picks"></div>
+    <p class="dz-all"><a class="more" id="dz-all" href="#/kesfet">Bu türün tümü<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></a></p>
+  </section>`;
+}
+function bindDiscover(v) {
+  const box = $('#dz-disc');
+  if (!box) return;
+  const picks = $('#dz-picks', box);
+  let current = '', gen = 0;
+  const pick = async (slug, reroll) => {
+    const g = genres.find(x => x.slug === slug);
+    if (!g) return;
+    current = slug;
+    const my = ++gen;
+    $$('.dz-genre', box).forEach(b => { const on = b.dataset.genre === slug; b.classList.toggle('on', on); b.setAttribute('aria-pressed', String(on)); });
+    const kind = section === 'media' && !g.tv ? 'movie' : 'tv';
+    $('#dz-all', box).href = `${kind === 'movie' ? '#/filmler' : '#/kesfet'}?tur=${encodeURIComponent(slug)}`;
+    picks.innerHTML = Array.from({length: 6}, () => '<span class="skeleton sk-poster"></span>').join('');
+    try {
+      const page = reroll ? 1 + Math.floor(Math.random() * 3) : 1;
+      const d = await api(`/api/browse?${new URLSearchParams({kind, genre: slug, sort: 'rating', page: String(page), q: '', section})}`);
+      if (my !== gen || v !== routeId) return;
+      const list = shuffled((d.items || []).filter(a => a.poster)).slice(0, 6);
+      picks.innerHTML = list.length ? list.map(card).join('') : '<p class="muted dz-empty">Bu türde başlık bulunamadı.</p>';
+      imgFallback(picks);
+    } catch {
+      if (my === gen && v === routeId) picks.innerHTML = '<p class="muted dz-empty">Öneriler yüklenemedi.</p>';
+    }
+  };
+  $$('.dz-genre', box).forEach(b => b.onclick = () => pick(b.dataset.genre, false));
+  $('#dz-reroll', box).onclick = () => pick(current, true);
+  const start = genres[Math.floor(Math.random() * Math.min(genres.length, 8))];
+  if (start) pick(start.slug, false);
+}
+function reelsTeaser() {
+  return `<a class="dz-reels-cta" href="#/tavsiye?reels=1">
+    <span class="dz-reels-icon" aria-hidden="true">${PLAY}</span>
+    <span><b>Reels</b><small>Kısa fragmanları kaydır, beğendiğini hemen aç.</small></span>
+    <span class="more">Reels'e geç<svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6 3 5 5-5 5"/></svg></span>
+  </a>`;
 }
 function homeSkeleton() {
   const row = n => `<div class="shelf"><span class="skeleton" style="height:22px;width:220px;margin-bottom:16px"></span><div class="row row-${section === 'media' ? 'land' : 'poster'}">${Array.from({length: n}, () => `<span class="skeleton sk-${section === 'media' ? 'land' : 'poster'}"></span>`).join('')}</div></div>`;
@@ -921,6 +1093,7 @@ async function viewWatch(v, kind, id, params) {
           </div>
         </div>
       </div>
+      <section class="cm" id="comments" aria-labelledby="cm-title"></section>
       ${castShelf(a)}
       ${shelf({title: section === 'anime' ? 'Bunu sevenler bunlara da baktı' : 'Benzer içerikler', items: a.recommendations || []})}
     </div>
@@ -941,6 +1114,77 @@ async function viewWatch(v, kind, id, params) {
   if (!movie) loadEpisodes(ctx);
   loadSources(ctx);
   if (a.section === 'anime') loadMangaBridge(a);
+  loadComments(a, v);
+}
+
+// ---------------- Yorumlar ----------------
+const COMMENT_MAX = 500;
+function commentItem(c) {
+  const body = esc(c.text).replace(/\n/g, '<br>');
+  let when = '';
+  try { when = new Date(c.at).toISOString(); } catch {}
+  return `<li class="cm-item" data-cid="${esc(c.id)}">
+    ${avatarMarkup({name: c.name, color: c.color})}
+    <div class="cm-body">
+      <p class="cm-head"><b>${esc(c.name)}</b>${c.you ? '<span class="cm-you">sen</span>' : ''}<time datetime="${when}">${ago(c.at)}</time></p>
+      ${c.spoiler ? `<button class="cm-spoiler" type="button">Spoiler içeriyor · görmek için dokun</button><p class="cm-text" hidden>${body}</p>` : `<p class="cm-text">${body}</p>`}
+      ${c.you ? '<button class="text-btn cm-del" type="button">Sil</button>' : ''}
+    </div>
+  </li>`;
+}
+async function loadComments(a, v) {
+  const box = $('#comments');
+  if (!box) return;
+  const q = `kind=${encodeURIComponent(a.kind)}&id=${encodeURIComponent(a.id)}`;
+  box.innerHTML = `<div class="shelf-head"><h2 id="cm-title">Yorumlar <span class="cm-count" id="cm-count"></span></h2></div>
+    <form class="cm-form" id="cm-form">
+      ${avatarMarkup(profile)}
+      <div class="cm-field">
+        <textarea name="text" rows="2" maxlength="${COMMENT_MAX}" placeholder="${esc(a.title)} hakkında ne düşünüyorsun?" aria-label="Yorum yaz" required></textarea>
+        <div class="cm-tools">
+          <label class="cm-check"><input type="checkbox" name="spoiler"> Spoiler içeriyor</label>
+          <span class="cm-left" id="cm-left">${COMMENT_MAX}</span>
+          <button class="btn btn-play btn-sm" type="submit">Gönder</button>
+        </div>
+      </div>
+    </form>
+    <div id="cm-list">${loading('Yorumlar yükleniyor')}</div>`;
+  const form = $('#cm-form', box), left = $('#cm-left', box), list = $('#cm-list', box);
+  const live = () => v === routeId && document.contains(box);
+  const paint = d => {
+    if (!live()) return;
+    $('#cm-count', box).textContent = d.total ? String(d.total) : '';
+    list.innerHTML = d.items?.length ? `<ol class="cm-list">${d.items.map(commentItem).join('')}</ol>` : '<p class="muted cm-empty">Henüz yorum yok. İlk yorumu sen yaz.</p>';
+  };
+  const updateLeft = () => { left.textContent = String(COMMENT_MAX - form.text.value.length); };
+  form.text.addEventListener('input', updateLeft);
+  form.text.addEventListener('keydown', e => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) form.requestSubmit(); });
+  form.onsubmit = async e => {
+    e.preventDefault();
+    const text = form.text.value.trim();
+    if (!text) return;
+    const btn = $('button[type="submit"]', form);
+    btn.disabled = true;
+    try {
+      const d = await apiSend('/api/comments', 'POST', {kind: a.kind, id: String(a.id), text, spoiler: form.spoiler.checked});
+      form.reset();
+      updateLeft();
+      paint(d);
+      toast('Yorumun eklendi', 'success');
+    } catch (err) { toast(err.message || 'Yorum gönderilemedi', 'error'); }
+    btn.disabled = false;
+  };
+  list.addEventListener('click', async e => {
+    const sp = e.target.closest('.cm-spoiler');
+    if (sp) { sp.nextElementSibling.hidden = false; sp.remove(); return; }
+    const del = e.target.closest('.cm-del');
+    if (!del || !confirm('Yorumun silinsin mi?')) return;
+    const cid = del.closest('.cm-item')?.dataset.cid;
+    try { paint(await apiSend(`/api/comments?${q}&cid=${encodeURIComponent(cid)}`, 'DELETE')); }
+    catch (err) { toast(err.message || 'Yorum silinemedi', 'error'); }
+  });
+  try { paint(await apiSend(`/api/comments?${q}`, 'GET')); }
+  catch (err) { if (live()) list.innerHTML = `<p class="muted cm-empty">${esc(err.status === 503 ? 'Yorumlar bu sunucuda kapalı.' : 'Yorumlar yüklenemedi.')}</p>`; }
 }
 
 async function loadMangaBridge(a) {
@@ -3780,7 +4024,11 @@ async function viewTavsiye() {
     <div class="mood-grid">${MOODS.map(m => `<button type="button" class="mood-card" data-mood="${m.id}"><b>${esc(m.label)}</b><span>${esc(m.hint)}</span></button>`).join('')}</div>
     ${moodState.spinning ? '<div class="mood-reveal is-spin"><span class="spin"></span> Zar atılıyor…</div>' : ''}
     ${p ? `<a class="mood-reveal" href="#/izle/${p.kind}/${p.id}"><img src="${esc(p.backdrop || p.poster || '')}" alt=""><div><span class="eyebrow">Bugünkü çekiliş</span><h2>${esc(p.title)}</h2><p>${esc((p.overview || '').slice(0, 180))}</p><span class="btn btn-play">İzlemeye geç</span></div></a>` : ''}
+    <section class="reels-row" id="reels" aria-labelledby="reels-h"></section>
   </div>`;
+  paintReels();
+  if (!reelState.items) loadReelPool().then(() => { if (document.documentElement.dataset.app === 'tavsiye') paintReels(); });
+  if (/[?&]reels=1/.test(location.hash) && !moodState.pick && !moodState.spinning) requestAnimationFrame(() => $('#reels')?.scrollIntoView({block: 'start', behavior: reduceMotion ? 'auto' : 'smooth'}));
   $$('[data-mood]').forEach(b => b.onclick = async () => {
     const spec = MOODS.find(m => m.id === b.dataset.mood);
     if (!spec || moodState.spinning) return;
@@ -3794,6 +4042,147 @@ async function viewTavsiye() {
     moodState.spinning = false;
     viewTavsiye();
   });
+}
+
+// ---- Reels: dikey fragman akışı (+ data/reels.js içindeki Instagram reel'leri) ----
+let reelState = {items: null, loading: false, error: ''};
+const igCode = url => String(url || '').match(/instagram\.com\/(?:reel|reels|p)\/([A-Za-z0-9_-]{5,40})/)?.[1] || '';
+async function loadReelPool() {
+  if (reelState.items || reelState.loading) return;
+  reelState.loading = true;
+  try {
+    const d = await api('/api/home?section=media');
+    const seen = new Set(), pool = [];
+    for (const s of d.shelves || []) for (const a of s.items || []) {
+      if (!a?.poster || seen.has(keyOf(a))) continue;
+      seen.add(keyOf(a));
+      pool.push(a);
+    }
+    reelState.items = shuffled(pool).slice(0, 24);
+  } catch (e) {
+    reelState.error = e.message || 'Reels yüklenemedi';
+    reelState.items = [];
+  }
+  reelState.loading = false;
+}
+const reelSlides = () => [
+  ...instagramReels.filter(r => igCode(r.url)).map(r => ({type: 'ig', code: igCode(r.url), title: r.title || 'Instagram reel', account: r.account || '', a: r.kind && r.id ? {kind: r.kind, id: r.id, title: r.title} : null})),
+  ...(reelState.items || []).map(a => ({type: 'trailer', a, title: a.title})),
+];
+function paintReels() {
+  const box = $('#reels');
+  if (!box) return;
+  const slides = reelSlides();
+  const body = slides.length
+    ? `<div class="reel-tiles">${slides.map((s, i) => s.type === 'ig'
+      ? `<button class="reel-tile reel-ig" type="button" data-reel="${i}"><span class="reel-badge">Instagram</span><span class="reel-tile-body"><b>${esc(s.title)}</b>${s.account ? `<small>@${esc(s.account)}</small>` : ''}</span><span class="reel-tile-play">${PLAY}</span></button>`
+      : `<button class="reel-tile" type="button" data-reel="${i}"><img src="${esc(s.a.poster)}" alt="" loading="lazy" decoding="async" data-fb><span class="reel-badge">Fragman</span><span class="reel-tile-body"><b>${esc(s.a.title)}</b><small>${esc([s.a.year, kindLabel(s.a)].filter(Boolean).join(' · '))}</small></span><span class="reel-tile-play">${PLAY}</span></button>`).join('')}</div>`
+    : reelState.loading || !reelState.items ? `<div class="reel-tiles">${Array.from({length: 6}, () => '<span class="skeleton reel-sk"></span>').join('')}</div>`
+    : `<p class="muted">${esc(reelState.error || 'Şu an gösterilecek reel yok.')}</p>`;
+  box.innerHTML = `<div class="shelf-head"><h2 id="reels-h">Reels</h2><span class="muted reels-sub">Fragmanları dikey kaydır, beğendiğini hemen aç.</span></div>${body}`;
+  $$('[data-reel]', box).forEach(b => b.onclick = () => openReels(Number(b.dataset.reel)));
+  imgFallback(box);
+}
+let reelSession = null;
+function openReels(start = 0) {
+  const slides = reelSlides();
+  if (!slides.length) return;
+  reelSession?.stop();
+  let dlg = $('#reels-dialog');
+  if (!dlg) {
+    dlg = document.createElement('dialog');
+    dlg.id = 'reels-dialog';
+    dlg.className = 'reels';
+    dlg.setAttribute('aria-label', 'Reels');
+    document.body.append(dlg);
+  }
+  dlg.innerHTML = `<button class="reels-close" type="button" aria-label="Kapat"><svg class="ln" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+    <div class="reels-feed">${slides.map((s, i) => {
+      const a = s.a;
+      const meta = s.type === 'ig' ? (s.account ? `@${s.account} · Instagram` : 'Instagram') : [a.year, kindLabel(a), (a.genres || []).slice(0, 2).join(', ')].filter(Boolean).join(' · ');
+      return `<section class="reel" data-i="${i}">
+        ${s.type === 'trailer' && (a.backdrop || a.poster) ? `<img class="reel-bg" src="${esc(a.backdrop || a.poster)}" alt="" data-fb>` : '<span class="reel-bg"></span>'}
+        <div class="reel-frame${s.type === 'ig' ? ' is-ig' : ''}" data-frame></div>
+        <div class="reel-info">
+          <h3>${esc(s.title)}</h3>
+          <p class="reel-meta">${esc(meta)}</p>
+          ${s.type === 'trailer' && a.overview ? `<p class="reel-line">${esc(firstLine(a.overview))}</p>` : ''}
+          ${a ? `<div class="actions"><a class="btn btn-play btn-sm" href="${watchHref(a)}">${PLAY}İzle</a>${s.type === 'trailer' ? `<button class="btn btn-ghost btn-sm" type="button" data-reel-list="${i}">${inList(a) ? CHECK + 'Listende' : PLUS + 'Listem'}</button>` : ''}</div>` : ''}
+        </div>
+      </section>`;
+    }).join('')}</div>
+    <div class="reels-nav"><button type="button" data-step="-1" aria-label="Önceki reel"><svg class="ln" viewBox="0 0 16 16"><path d="M3 10l5-5 5 5"/></svg></button><button type="button" data-step="1" aria-label="Sonraki reel"><svg class="ln" viewBox="0 0 16 16"><path d="M3 6l5 5 5-5"/></svg></button></div>`;
+  const feed = $('.reels-feed', dlg);
+  const els = $$('.reel', dlg);
+  let active = -1;
+  const mount = async i => {
+    const el = els[i], s = slides[i], frame = $('[data-frame]', el);
+    if (s.type === 'ig') {
+      frame.innerHTML = `<iframe src="https://www.instagram.com/reel/${encodeURIComponent(s.code)}/embed/" title="${esc(s.title)}" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`;
+      return;
+    }
+    frame.innerHTML = loading('Fragman aranıyor');
+    let d = null;
+    try { d = await api(`/api/title/${s.a.kind}/${s.a.id}`, 15000, {quiet: true}); } catch {}
+    if (active !== i || !dlg.open) return;
+    const key = d?.trailer?.site === 'youtube' ? d.trailer.key : '';
+    frame.innerHTML = key
+      ? `<iframe src="https://www.youtube-nocookie.com/embed/${encodeURIComponent(key)}?autoplay=1&mute=1&playsinline=1&rel=0&modestbranding=1&loop=1&playlist=${encodeURIComponent(key)}" title="${esc(s.title)} fragmanı" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>`
+      : '<p class="reel-none">Bu başlığın fragmanı yok. Kaydırmaya devam et.</p>';
+    // Sonraki fragmanın bilgisini önceden al (önbelleğe düşer).
+    const next = slides[i + 1];
+    if (next?.type === 'trailer') api(`/api/title/${next.a.kind}/${next.a.id}`, 15000, {quiet: true}).catch(() => {});
+  };
+  const activate = i => {
+    if (i === active || i < 0 || i >= els.length) return;
+    active = i;
+    // Aynı anda yalnızca görünen reel oynar; diğerlerinin oynatıcısı kaldırılır.
+    els.forEach((el, k) => { el.classList.toggle('on', k === i); if (k !== i) $('[data-frame]', el).innerHTML = ''; });
+    mount(i);
+  };
+  // Görünen reel hem IntersectionObserver ile hem de kaydırma bitince konumdan bulunur.
+  const io = new IntersectionObserver(entries => entries.forEach(e => { if (e.isIntersecting) activate(Number(e.target.dataset.i)); }), {root: feed, threshold: 0.6});
+  els.forEach(el => io.observe(el));
+  let scrollT = 0;
+  const onScroll = () => { clearTimeout(scrollT); scrollT = setTimeout(() => activate(Math.round(feed.scrollTop / Math.max(1, feed.clientHeight))), 140); };
+  feed.addEventListener('scroll', onScroll, {passive: true});
+  const session = {stop() {
+    io.disconnect();
+    clearTimeout(scrollT);
+    feed.removeEventListener('scroll', onScroll);
+    els.forEach(el => { const f = $('[data-frame]', el); if (f) f.innerHTML = ''; });
+  }};
+  reelSession = session;
+  const go = i => {
+    i = Math.max(0, Math.min(els.length - 1, i));
+    feed.scrollTo({top: i * feed.clientHeight, behavior: reduceMotion ? 'auto' : 'smooth'});
+    activate(i);
+  };
+  const shut = () => { session.stop(); if (dlg.open) dlg.close(); };
+  dlg.onkeydown = e => {
+    if (e.key === 'ArrowDown' || e.key === 'j') { e.preventDefault(); go(active + 1); }
+    else if (e.key === 'ArrowUp' || e.key === 'k') { e.preventDefault(); go(active - 1); }
+  };
+  dlg.onclick = e => {
+    if (e.target.closest('.reels-close')) { shut(); return; }
+    const st = e.target.closest('[data-step]');
+    if (st) { go(active + Number(st.dataset.step)); return; }
+    const lb = e.target.closest('[data-reel-list]');
+    if (lb) { const a = slides[Number(lb.dataset.reelList)].a; const on = toggleList(a); lb.innerHTML = on ? CHECK + 'Listende' : PLUS + 'Listem'; return; }
+    if (e.target.closest('a[href^="#"]')) shut();
+  };
+  // "close" olayı geç gelebilir: o sırada pencere yeniden açıldıysa yeni içerik silinmez.
+  dlg.onclose = () => {
+    if (dlg.open) return;
+    session.stop();
+    if (reelSession === session) reelSession = null;
+    dlg.innerHTML = '';
+  };
+  imgFallback(dlg);
+  player?.video?.pause();
+  dlg.showModal();
+  feed.scrollTop = start * feed.clientHeight;
+  activate(start);
 }
 
 // ---- 404 ----

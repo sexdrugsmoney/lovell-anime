@@ -10,6 +10,7 @@ import {adminConfig, adminRequest} from '../lib/admin.js';
 import {lookupMusic} from '../lib/music.js';
 import {searchManga, popularManga, mangaDetail, mangaChapters, chapterPages} from '../lib/readfy.js';
 import {submitSpeed, listSpeedBoard} from '../lib/speed.js';
+import {kvCommentStore, listComments, postComment, deleteComment} from '../lib/comments.js';
 import trArchiveIndex from '../src/data/tr-archive-index.js';
 
 const ALLOWED_IMG_HOSTS = new Set(['s4.anilist.co', 's3.anilist.co', 'img.anili.st']);
@@ -529,6 +530,24 @@ export default {
       const store = profileKv(env);
       const out = await listSpeedBoard({store, hash, duration: url.searchParams.get('duration'), lang: url.searchParams.get('lang')});
       return json(out);
+    }
+    if (url.pathname === '/api/comments') {
+      const kv = env.PROFILES?.put ? env.PROFILES : env.MEDIA_SOURCES?.put ? env.MEDIA_SOURCES : null;
+      if (!kv) return json({error: 'Yorumlar bu sunucuda kapalı'}, 503);
+      const store = kvCommentStore(kv);
+      const hash = await hashKey(requestKey(request.headers.get('x-lovell-key'), request.headers.get('cookie')));
+      const q = url.searchParams;
+      let out;
+      if (request.method === 'GET' || request.method === 'HEAD') out = await listComments({store, hash, kind: q.get('kind'), id: q.get('id')});
+      else if (request.method === 'DELETE') out = await deleteComment({store, hash, kind: q.get('kind'), id: q.get('id'), cid: q.get('cid')});
+      else if (request.method === 'POST') {
+        const text = await request.text();
+        if (text.length > 4000) return json({error: 'İstek çok büyük'}, 413);
+        let body;
+        try { body = text ? JSON.parse(text) : {}; } catch { return json({error: 'Geçersiz JSON'}, 400); }
+        out = await postComment({store, hash, rec: open, body});
+      } else return json({error: 'Desteklenmeyen istek'}, 405);
+      return json(out.data, out.status);
     }
     if (!['GET', 'HEAD'].includes(request.method)) return json({error: 'Desteklenmeyen istek'}, 405);
     if (isHlsProxyPath(url.pathname)) return handleHlsProxy(proxySecret(env), url.pathname, request.headers.get('range'), url.search);

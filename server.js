@@ -16,6 +16,8 @@ import {adminConfig, adminRequest} from './lib/admin.js';
 import {lookupMusic} from './lib/music.js';
 import {searchManga, popularManga, mangaDetail, mangaChapters, chapterPages} from './lib/readfy.js';
 import {submitSpeed, listSpeedBoard} from './lib/speed.js';
+import {listComments, postComment, deleteComment} from './lib/comments.js';
+import {fileCommentStore} from './lib/comment-store.js';
 
 const TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -133,6 +135,7 @@ function decodeSubtitle(buf) {
 
 const int = (v, d = 1) => (/^\d{1,4}$/.test(v || '') ? Number(v) : d);
 const profiles = fileProfileStore();
+const comments = fileCommentStore();
 
 async function readJson(req) {
   const chunks = [];
@@ -237,6 +240,20 @@ export const server = http.createServer(async (req, res) => {
     const hash = await hashKey(key);
     const out = await listSpeedBoard({store: profiles, hash, duration: u.searchParams.get('duration'), lang: u.searchParams.get('lang')});
     return json(res, 200, out);
+  }
+  if (u.pathname === '/api/comments') {
+    try {
+      const hash = await hashKey(requestKey(req.headers['x-lovell-key'], req.headers.cookie));
+      const q = u.searchParams;
+      let out;
+      if (req.method === 'GET' || req.method === 'HEAD') out = await listComments({store: comments, hash, kind: q.get('kind'), id: q.get('id')});
+      else if (req.method === 'DELETE') out = await deleteComment({store: comments, hash, kind: q.get('kind'), id: q.get('id'), cid: q.get('cid')});
+      else if (req.method === 'POST') out = await postComment({store: comments, hash, rec: open, body: await readJson(req)});
+      else return json(res, 405, {error: 'Desteklenmeyen istek'});
+      return json(res, out.status, out.data);
+    } catch (e) {
+      return json(res, e.status || 400, {error: e.message || 'İstek başarısız'});
+    }
   }
   if (!['GET', 'HEAD'].includes(req.method)) return json(res, 405, {error: 'Desteklenmeyen istek'});
   const q = u.searchParams;

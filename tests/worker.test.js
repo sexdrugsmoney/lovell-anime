@@ -125,3 +125,17 @@ test('Lovellify Searchify vekili anahtar ister ve sonucu döndürür', async () 
   assert.equal(d.data.trackName, 'Deneme');
   assert.equal(d.data.distributor, 'TuneCore');
 });
+
+test('Worker yorumları anahtarla yazar, listeler ve profil listesine karıştırmaz', async () => {
+  assert.equal((await worker.fetch(new Request('https://lovell.example.workers.dev/api/comments?kind=tv&id=7'), env)).status, 401);
+  const post = await worker.fetch(new Request('https://lovell.example.workers.dev/api/comments', {method: 'POST', headers: {cookie: pass, 'content-type': 'application/json'}, body: JSON.stringify({kind: 'tv', id: '7', text: 'Bulut güzel'})}), env);
+  assert.equal(post.status, 201);
+  const list = await (await call('/api/comments?kind=tv&id=7')).json();
+  assert.equal(list.total, 1);
+  assert.equal(list.items[0].name, 'Test');
+  assert.equal(list.items[0].you, true);
+  assert.ok(box.has('comments:tv:7'));
+  assert.equal([...box.keys()].some(k => k.startsWith('profile:comments')), false);
+  const del = await worker.fetch(new Request(`https://lovell.example.workers.dev/api/comments?kind=tv&id=7&cid=${list.items[0].id}`, {method: 'DELETE', headers: {cookie: pass}}), env);
+  assert.equal((await del.json()).total, 0);
+});

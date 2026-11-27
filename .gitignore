@@ -3,6 +3,8 @@ node_modules
 .env
 data/profiles.json
 data/profiles.json.tmp
+data/comments.json
+data/comments.json.tmp
 streams.json
 media/*
 !media/BURAYA-VIDEO-KOY.txt
